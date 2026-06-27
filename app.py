@@ -472,7 +472,8 @@ def section_settings(backend):
     st.subheader("⚙️ Impostazioni")
     st.write(f"**Backend storage:** `{backend.name}`")
     st.write(f"**Workbook:** `{storage.workbook_name()}`")
-    st.text_input("Il tuo nome (per il lock multi-utente)", key="user_name")
+    st.write(f"**Utente corrente:** `{current_user()}` "
+             "_(modificabile nella barra laterale)_")
     if not backend_ready(backend):
         st.warning("Il workbook non è ancora presente nello storage condiviso.")
         seed = st.file_uploader("Carica il MAGAZZINO iniziale per inizializzare", type=["xlsx"])
