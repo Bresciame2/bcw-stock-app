@@ -255,7 +255,21 @@ def _validate_carico(data, valid_tipologie=None):
 
 # ── CARICO ───────────────────────────────────────────────────────────────────
 
-def add_carico(data, validate=True):
+def find_instock_serial(ws, matr):
+    """Return the row of an item with this matricola that is currently IN STOCK
+    (not sold), or None. Used to block loading the same serial twice."""
+    target = str(matr or "").strip().upper()
+    if not target or target == "N/D":
+        return None
+    for r in range(3, ws.max_row + 1):
+        cell_val = ws.cell(r, COL["MATR_ARMA"]).value
+        if cell_val is not None and str(cell_val).strip().upper() == target:
+            if not _is_sold(ws, r):
+                return r
+    return None
+
+
+def add_carico(data, validate=True, allow_duplicate=False):
     wb = load_wb()
     ws = wb["MAGAZZINO"]
 
@@ -263,6 +277,16 @@ def add_carico(data, validate=True):
         problems = _validate_carico(data, load_valid_tipologie(wb))
         if problems:
             return {"status": "error", "message": " ".join(problems), "problems": problems}
+
+    if not allow_duplicate:
+        dup = find_instock_serial(ws, data.get("matr_arma"))
+        if dup:
+            matr = str(data.get("matr_arma") or "").strip()
+            return {"status": "error",
+                    "message": f"Matricola {matr} è già IN GIACENZA alla riga {dup}. "
+                               f"Carico annullato per evitare un duplicato. "
+                               f"(Se è un'arma usata rientrata, registra prima lo scarico "
+                               f"della precedente o usa una matricola corretta.)"}
 
     n_op = data.get("n_operazione")
     if n_op:
