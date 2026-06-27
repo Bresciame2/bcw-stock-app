@@ -142,18 +142,21 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
         fields_prompt = """Documento: PERMESSO/AUTORIZZAZIONE DI ESPORTAZIONE armi
 (licenza di esportazione, autorizzazione UAMA, nulla osta, carnet ATA, EUC).
 Estrai UN SOLO oggetto JSON con questi campi (null se assente):
-numero,data_emissione,data_scadenza,paese_destinazione,cliente,tipo,matricole
+numero,data_emissione,data_scadenza,paese_destinazione,cliente,tipo,articoli
 - numero: numero del permesso / ATA / autorizzazione (questo è il N. ATA)
 - date: formato DD/MM/YYYY
 - paese_destinazione: paese di destinazione dell'export
 - cliente: destinatario / end user
 - tipo: uno tra "Licenza Esportazione","Autorizzazione UAMA","EUC (End User Certificate)","Transito / Brokering","Altro"
-- matricole: array delle matricole arma elencate nel permesso (vuoto se non elencate)
+- articoli: array delle armi elencate nel permesso, UN oggetto per arma con
+  {matricola,marca,modello,calibro} (array vuoto se non elencate). Riporta la
+  matricola ESATTA come scritta.
 Output: UN SOLO oggetto JSON {...}, nessun testo fuori dal JSON."""
     else:
         fields_prompt = """Documento: fattura vendita armeria. Estrai OGNI arma venduta.
 Campi per oggetto (usa null se assente):
-matr_arma,cliente,prezzo_vendita,data_scarico,n_fattura,data_fattura_vendita,n_ata,titolo_acquisto
+matr_arma,marca,modello,calibro,tipologia,cliente,prezzo_vendita,data_scarico,n_fattura,data_fattura_vendita,n_ata,titolo_acquisto
+- marca: produttore (es. "BERETTA"); modello; calibro (es. "9X21")
 - date: formato DD/MM/YYYY
 - prezzo_vendita: numero
 - cliente: nome breve
@@ -553,8 +556,9 @@ def _extract_permit_block(api_key, invoice_no=""):
                     "expiry_date": p.get("data_scadenza", ""),
                     "invoice_no": invoice_no or "",
                     "tags": ["export", "scarico"],
-                    "notes": ("Matricole: " + ", ".join(p.get("matricole", [])))
-                             if p.get("matricole") else "",
+                    "notes": ("Matricole: " + ", ".join(
+                        a.get("matricola", "") for a in p.get("articoli", [])
+                        if a.get("matricola"))) if p.get("articoli") else "",
                 })
             except Exception as e:
                 flash(f"N. ATA estratto ma archiviazione licenza non riuscita: {e}",
@@ -576,6 +580,7 @@ def section_scarico(api_key):
     items = _extract_block("SCARICO", api_key) or [{}]
     invoice_no = next((it.get("n_fattura") for it in items if it.get("n_fattura")), "")
     ata = _extract_permit_block(api_key, invoice_no)
+    _render_export_check(items)
     rows = [{
         "matr_arma": it.get("matr_arma") or "", "cliente": it.get("cliente") or "",
         "prezzo_vendita": float(it.get("prezzo_vendita") or 0),
@@ -629,6 +634,64 @@ def section_scarico(api_key):
         st.rerun()
 
     _render_scarico_fixes()
+
+
+def _render_export_check(invoice_items):
+    """Compare the sales invoice against the export permit (serials, brands,
+    calibers) so discrepancies are caught before customs. Anchored on the
+    MAGAZZINO record for the authoritative brand/caliber of each serial."""
+    permit = st.session_state.get("scarico_permit")
+    if not permit:
+        return
+    permit_items = permit.get("articoli") or []
+    st.markdown("---")
+    st.markdown("#### 🛃 Controllo doganale — fattura vs permesso")
+    if not permit_items:
+        st.info("Il permesso non elenca le matricole, quindi non posso confrontare "
+                "marche/calibri/matricole. Verifica manualmente che corrispondano.")
+        return
+    inv_with_serial = [it for it in invoice_items
+                       if (it.get("matr_arma") or "").strip()]
+    if not inv_with_serial:
+        st.info("Nessuna matricola sulla fattura da confrontare.")
+        return
+    try:
+        rep = with_workbook(
+            lambda _p: stock_agent.reconcile_export(
+                inv_with_serial, permit_items, stock_agent.load_wb()["MAGAZZINO"]),
+            read_only=True)
+    except Exception as e:
+        st.warning(f"Controllo non disponibile: {e}")
+        return
+
+    if rep["ok"]:
+        st.success(f"✅ Tutto coincide: {rep['matched']} armi verificate "
+                   "(matricole, marche e calibri corrispondono tra fattura e permesso).")
+        return
+
+    st.error("⚠️ Discrepanze rilevate — da risolvere PRIMA dell'export:")
+    if rep["only_invoice"]:
+        st.markdown("**Sulla fattura ma NON sul permesso** (non esportabili così):")
+        st.dataframe(pd.DataFrame([
+            {"Matricola": x["matr_arma"], "Marca": x["marca"],
+             "Modello": x["modello"], "Calibro": x["calibro"]}
+            for x in rep["only_invoice"]]), use_container_width=True, hide_index=True)
+    if rep["only_permit"]:
+        st.markdown("**Sul permesso ma NON in fattura** (manca dalla vendita?):")
+        st.dataframe(pd.DataFrame([
+            {"Matricola": x["matr_arma"], "Marca": x["marca"],
+             "Modello": x["modello"], "Calibro": x["calibro"]}
+            for x in rep["only_permit"]]), use_container_width=True, hide_index=True)
+    if rep["mismatches"]:
+        st.markdown("**Dati che non corrispondono** (fattura/magazzino ≠ permesso):")
+        st.dataframe(pd.DataFrame([
+            {"Matricola": m["matricola"], "Campo": m["campo"],
+             "Fattura/Magazzino": m["fattura"], "Permesso": m["permesso"],
+             "Nota": m.get("nota", "")}
+            for m in rep["mismatches"]]), use_container_width=True, hide_index=True)
+    if rep["matched"]:
+        st.caption(f"{rep['matched']} armi confrontate. "
+                   "Le righe sopra sono le sole con problemi.")
 
 
 def _render_scarico_fixes():

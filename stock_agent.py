@@ -232,6 +232,87 @@ def suggest_serials(ws, matr, limit=3, only_instock=True):
     return [c for c in cands if c["score"] >= 0.6][:limit]
 
 
+def _norm_serial(s):
+    confuse = str.maketrans({"O": "0", "I": "1", "L": "1", "S": "5",
+                             "B": "8", "Z": "2", "G": "6", "Q": "0"})
+    return str(s or "").strip().upper().translate(confuse)
+
+
+def _field(it, *keys):
+    for k in keys:
+        v = it.get(k)
+        if v not in (None, ""):
+            return str(v).strip()
+    return ""
+
+
+def reconcile_export(invoice_items, permit_items, ws=None):
+    """Cross-check the sales invoice against the export permit for customs.
+
+    Confirms every gun on the invoice is on the permit (and vice-versa) and that
+    matched serials agree on marca / modello / calibro. When `ws` (MAGAZZINO) is
+    given, the invoice side is enriched with the authoritative registered
+    marca/modello/calibro/tipologia so the permit is checked against the real
+    stock record, not just the invoice text.
+
+    Items are dicts with any of: matr_arma/matricola, marca/brand,
+    modello/model, calibro/cal/caliber, tipologia/tipo.
+
+    Returns {ok, matched, only_invoice[], only_permit[], mismatches[]}.
+    Serials are matched after folding common OCR confusions (O↔0, I/L↔1, …);
+    a matched pair whose raw serials still differ is flagged as a likely OCR
+    discrepancy so it still gets a human look."""
+    def serial(it):
+        return _field(it, "matr_arma", "matricola", "serial")
+
+    def base(it):
+        return {"matr_arma": serial(it),
+                "marca": _field(it, "marca", "brand"),
+                "modello": _field(it, "modello", "model"),
+                "calibro": _field(it, "calibro", "cal", "caliber"),
+                "tipologia": _field(it, "tipologia", "tipo")}
+
+    def ref(it):
+        out = base(it)
+        if ws is not None and out["matr_arma"]:
+            row = find_item_row(ws, {"matr_arma": out["matr_arma"]})
+            if row:
+                for label, col in (("marca", "MARCA"), ("modello", "MODELLO"),
+                                   ("calibro", "CALIBRO"), ("tipologia", "TIPOLOGIA")):
+                    if not out[label]:
+                        out[label] = str(ws.cell(row, COL[col]).value or "").strip()
+        return out
+
+    inv, per = {}, {}
+    for it in invoice_items:
+        if serial(it):
+            inv[_norm_serial(serial(it))] = ref(it)
+    for it in permit_items:
+        if serial(it):
+            per[_norm_serial(serial(it))] = base(it)
+
+    only_invoice = [inv[k] for k in inv if k not in per]
+    only_permit = [per[k] for k in per if k not in inv]
+    mismatches, matched = [], 0
+    for k, a in inv.items():
+        b = per.get(k)
+        if not b:
+            continue
+        matched += 1
+        if a["matr_arma"].strip().upper() != b["matr_arma"].strip().upper():
+            mismatches.append({"matricola": a["matr_arma"], "campo": "matricola",
+                               "fattura": a["matr_arma"], "permesso": b["matr_arma"],
+                               "nota": "possibile errore di lettura (OCR)"})
+        for label in ("marca", "modello", "calibro"):
+            va, vb = a[label], b[label]
+            if va and vb and va.upper() != vb.upper():
+                mismatches.append({"matricola": a["matr_arma"], "campo": label,
+                                   "fattura": va, "permesso": vb})
+    ok = not only_invoice and not only_permit and not mismatches
+    return {"ok": ok, "matched": matched, "only_invoice": only_invoice,
+            "only_permit": only_permit, "mismatches": mismatches}
+
+
 # ── VALIDATION / HARDENING ────────────────────────────────────────────────────
 
 def validate_workbook():
