@@ -224,6 +224,31 @@ def with_workbook(fn, read_only=False):
         return fn(path)
 
 
+def flash(message, level="success"):
+    """Show a confirmation that stays visible regardless of the active tab.
+
+    A st.toast floats over the page on the current rerun; the message is also
+    stashed in session_state so it survives the rerun (st.tabs may switch the
+    visible tab on submit) and is re-rendered at the top of the page by
+    render_flash()."""
+    icon = {"success": "✅", "error": "❌", "warning": "⚠️"}.get(level, "ℹ️")
+    try:
+        st.toast(message, icon=icon)
+    except Exception:
+        pass
+    st.session_state["_flash"] = (level, f"{icon} {message}")
+
+
+def render_flash():
+    """Render and clear any pending flash message at the top of the page."""
+    f = st.session_state.pop("_flash", None)
+    if not f:
+        return
+    level, msg = f
+    {"success": st.success, "error": st.error, "warning": st.warning}.get(
+        level, st.info)(msg)
+
+
 # ── UI sections ───────────────────────────────────────────────────────────────
 
 def section_dashboard():
@@ -441,12 +466,24 @@ def section_carico(api_key):
                 res = stock_agent.add_carico(d)
                 (ok if res["status"] == "success" else errs).append(res)
             return ok, errs
-        ok, errs = with_workbook(_do)
-        for e in errs:
-            st.error(e["message"])
+        try:
+            ok, errs = with_workbook(_do)
+        except Exception as e:
+            flash(f"Errore durante il salvataggio del carico: {e}", "error")
+            st.rerun()
         if ok:
             st.session_state.pop("items_CARICO", None)
-            st.success(f"{len(ok)} carichi salvati nel registro condiviso.")
+            if errs:
+                flash(f"{len(ok)} carichi salvati; {len(errs)} non riusciti: "
+                      + " | ".join(e["message"] for e in errs), "warning")
+            else:
+                flash(f"{len(ok)} carichi salvati nel registro condiviso.")
+        elif errs:
+            flash("Carico non riuscito: "
+                  + " | ".join(e["message"] for e in errs), "error")
+        else:
+            flash("Nessun carico salvato — controlla i dati inseriti.", "warning")
+        st.rerun()
 
 
 def section_scarico(api_key):
@@ -477,12 +514,24 @@ def section_scarico(api_key):
                 res = stock_agent.add_scarico(r.to_dict())
                 (ok if res["status"] == "success" else errs).append(res)
             return ok, errs
-        ok, errs = with_workbook(_do)
-        for e in errs:
-            st.error(e["message"])
+        try:
+            ok, errs = with_workbook(_do)
+        except Exception as e:
+            flash(f"Errore durante il salvataggio dello scarico: {e}", "error")
+            st.rerun()
         if ok:
             st.session_state.pop("items_SCARICO", None)
-            st.success(f"{len(ok)} scarichi registrati.")
+            if errs:
+                flash(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti: "
+                      + " | ".join(e["message"] for e in errs), "warning")
+            else:
+                flash(f"{len(ok)} scarichi registrati nel registro condiviso.")
+        elif errs:
+            flash("Scarico non riuscito: "
+                  + " | ".join(e["message"] for e in errs), "error")
+        else:
+            flash("Nessuno scarico registrato — controlla i dati inseriti.", "warning")
+        st.rerun()
 
 
 def section_registro():
@@ -941,6 +990,7 @@ def section_documents():
 
 def main():
     st.title("🔫 BCW – Gestione Magazzino & Registro")
+    render_flash()
     api_key = get_api_key()
     backend = get_backend()
 
