@@ -169,7 +169,7 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-6", max_tokens=8192,
+                model="claude-sonnet-4-6", max_tokens=32000,
                 system=system_msg, messages=[{"role": "user", "content": content}])
             break
         except anthropic.AuthenticationError:
