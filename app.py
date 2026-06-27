@@ -29,7 +29,9 @@ import stock_agent
 import storage
 import doc_numbering
 import doc_templates
+import bulk_io
 from license_archive import LicenseArchive, DOC_TYPES
+from doc_archive import DocArchive, DOC_TYPE_LABELS
 
 st.set_page_config(page_title="BCW Magazzino", page_icon="🔫", layout="wide")
 
@@ -333,11 +335,16 @@ def _extract_block(op_key, api_key):
 
 def section_carico(api_key):
     st.subheader("➕ Carico (acquisto)")
+    cbulk = _bulk_excel("carico", key="carico")
+    if cbulk:
+        st.session_state["items_CARICO"] = cbulk
+        st.success(f"{len(cbulk)} righe importate dall'Excel.")
+        st.rerun()
     items = _extract_block("CARICO", api_key) or [{}]
     rows = []
     for it in items:
         rows.append({
-            "data_carico": it.get("data_ddt") or it.get("data_fattura") or "",
+            "data_carico": it.get("data_carico") or it.get("data_ddt") or it.get("data_fattura") or "",
             "n_operazione": 0,
             "tipologia": (it.get("tipologia") or "").upper(),
             "calibro": it.get("calibro") or "", "marca": it.get("marca") or "",
@@ -381,6 +388,11 @@ def section_carico(api_key):
 
 def section_scarico(api_key):
     st.subheader("➖ Scarico (vendita)")
+    sbulk = _bulk_excel("scarico", key="scarico")
+    if sbulk:
+        st.session_state["items_SCARICO"] = sbulk
+        st.success(f"{len(sbulk)} righe importate dall'Excel.")
+        st.rerun()
     items = _extract_block("SCARICO", api_key) or [{}]
     rows = [{
         "matr_arma": it.get("matr_arma") or "", "cliente": it.get("cliente") or "",
@@ -530,6 +542,43 @@ def section_settings(backend):
 
 # ── Documenti (proforma / packing / declarations) ─────────────────────────────
 
+def _bulk_excel(kind, company=None, key=None):
+    """Template-download + Excel-upload widget for a bulk flow.
+    Returns the parsed data on a fresh import (list of dicts, or for packing a
+    {n_parcels, parcels} dict), otherwise None. Caller seeds the editors."""
+    key = key or kind
+    suffix = f"_{company}" if company else ""
+    with st.expander("⬆️ Carica in blocco da Excel"):
+        st.caption("Scarica il modello, compilalo, poi ricaricalo per inserire molte righe insieme.")
+        st.download_button(
+            "⬇️ Scarica modello Excel",
+            bulk_io.template_bytes(kind, company),
+            file_name=f"modello_{kind}{suffix}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"tpl_{key}")
+        up = st.file_uploader("Carica il file compilato", type=["xlsx"], key=f"up_{key}")
+        if up is not None and st.button("📥 Importa righe", key=f"imp_{key}"):
+            try:
+                return bulk_io.parse(kind, up.read(), company)
+            except Exception as e:
+                st.error(f"Errore nella lettura dell'Excel: {e}")
+    return None
+
+
+def _archive_doc(base_name, html, meta):
+    """Save a generated document (PDF if available + HTML) to the shared archive
+    and record it in the ledger. Never blocks document generation on failure."""
+    try:
+        pdf_bytes = None
+        try:
+            pdf_bytes = doc_templates.to_pdf(html)
+        except Exception:
+            pdf_bytes = None
+        DocArchive(get_backend()).add(base_name, html, pdf_bytes, meta)
+    except Exception as e:
+        st.warning(f"Documento generato, ma non archiviato ({e}).")
+
+
 def _doc_downloads(full_html, base_name):
     """Render HTML preview + PDF/Word download buttons for a generated document."""
     import streamlit.components.v1 as components
@@ -610,6 +659,12 @@ def _doc_proforma():
     if items_key not in st.session_state:
         st.session_state[items_key] = []
 
+    bulk = _bulk_excel("proforma", company, key=f"pf_{company}")
+    if bulk:
+        st.session_state[items_key] = bulk
+        st.success(f"{len(bulk)} righe importate dall'Excel.")
+        st.rerun()
+
     if company == "BCW":
         _stock_picker(items_key, lambda s: {
             "tipo": s["tipologia"], "cal": s["calibro"], "marca": s["marca"],
@@ -636,9 +691,14 @@ def _doc_proforma():
              "currency": co["currency"], "buyer": buyer, "items": items,
              "notes": notes or ""}
         html = doc_templates.document_html(doc_templates.render_proforma(f), number)
+        _archive_doc(number, html, {
+            "number": number, "company": company, "doc_type": "proforma",
+            "buyer": buyer.get("name") or buyer.get("trade") or "",
+            "total": doc_templates._doc_total(f), "currency": co["currency"],
+            "doc_date": date.isoformat(), "user": current_user()})
         st.session_state["pf_result"] = (html, number)
         st.session_state[items_key] = []
-        st.success(f"Proforma {number} generata.")
+        st.success(f"Proforma {number} generata e archiviata.")
     if st.session_state.get("pf_result"):
         html, number = st.session_state["pf_result"]
         _doc_downloads(html, number)
@@ -651,9 +711,20 @@ def _doc_packing():
     date = st.date_input("Data", key="pk_date")
     buyer = _buyer_inputs("pk")
 
+    pbulk = _bulk_excel("packing", company, key=f"pk_{company}")
+    if pbulk:
+        st.session_state["pk_nparcels"] = max(1, pbulk["n_parcels"])
+        for i, parcel in enumerate(pbulk["parcels"]):
+            st.session_state[f"pk_items_{company}_{i}"] = parcel["items"] or [{}]
+            st.session_state[f"pk_dims_{i}"] = parcel["dims"]
+            st.session_state[f"pk_weight_{i}"] = parcel["weight"]
+        st.success(f"{pbulk['n_parcels']} colli importati dall'Excel.")
+        st.rerun()
+
+    if "pk_nparcels" not in st.session_state:
+        st.session_state["pk_nparcels"] = 1
     n_parcels = st.number_input("Numero di colli / parcels", min_value=1, max_value=50,
-                                value=int(st.session_state.get("pk_nparcels", 1)), step=1,
-                                key="pk_nparcels")
+                                step=1, key="pk_nparcels")
     pcols = ["qty", "type", "brand", "model", "caliber", "serial1", "serial2"]
     parcels_input = []
     for i in range(int(n_parcels)):
@@ -683,10 +754,15 @@ def _doc_packing():
         f = {"company": company, "number": number, "date": date.isoformat(),
              "buyer": buyer, "parcels": parcels_input, "notes": notes or ""}
         html = doc_templates.document_html(doc_templates.render_packing(f), number)
+        _archive_doc(number, html, {
+            "number": number, "company": company, "doc_type": "packing",
+            "buyer": buyer.get("name") or buyer.get("trade") or "",
+            "total": "", "currency": "",
+            "doc_date": date.isoformat(), "user": current_user()})
         st.session_state["pk_result"] = (html, number)
         for i in range(int(n_parcels)):
             st.session_state.pop(f"pk_items_{company}_{i}", None)
-        st.success(f"Packing list {number} generata.")
+        st.success(f"Packing list {number} generata e archiviata.")
     if st.session_state.get("pk_result"):
         html, number = st.session_state["pk_result"]
         _doc_downloads(html, number)
@@ -727,24 +803,75 @@ def _doc_declarations():
             "invDate": inv_date.isoformat(), "dest": dest, "contract": contract,
             "commodity": commodity, "place": place, "signDate": sign_date.isoformat(),
             "forwarder": forwarder, "doganalista": doganalista}}
-        html = doc_templates.document_html(doc_templates.render_forms(f),
-                                           f"EUR1-EUC {inv_no or ''}".strip())
+        base = f"EUR1-EUC {inv_no or ''}".strip()
+        html = doc_templates.document_html(doc_templates.render_forms(f), base)
+        _archive_doc(base, html, {
+            "number": inv_no or "", "company": "BCW", "doc_type": "declaration",
+            "buyer": buyer.get("name") or buyer.get("trade") or "",
+            "total": "", "currency": "",
+            "doc_date": inv_date.isoformat(), "user": current_user()})
         st.session_state["ef_result"] = html
-        st.success("Dichiarazioni generate.")
+        st.success("Dichiarazioni generate e archiviate.")
     if st.session_state.get("ef_result"):
         _doc_downloads(st.session_state["ef_result"],
                        f"EUR1-EUC {st.session_state.get('ef_invno','')}".strip())
 
 
+def _doc_archive_view():
+    st.markdown("**Registro documenti emessi** — ogni proforma, packing list e "
+                "dichiarazione generata viene salvata qui e può essere riscaricata.")
+    arch = DocArchive(get_backend())
+    f1, f2, f3 = st.columns([2, 1, 1])
+    query = f1.text_input("Cerca (numero, cliente, utente…)", key="docarch_q")
+    company = f2.selectbox("Azienda", ["(tutte)", "BME", "BCW"], key="docarch_co")
+    type_labels = {"(tutti)": None, **{v: k for k, v in DOC_TYPE_LABELS.items()}}
+    ftype = f3.selectbox("Tipo", list(type_labels.keys()), key="docarch_ty")
+
+    entries = arch.list(
+        query=query or None,
+        company=None if company == "(tutte)" else company,
+        doc_type=type_labels[ftype])
+
+    st.caption(f"{len(entries)} documenti")
+    if not entries:
+        st.info("Nessun documento archiviato ancora.")
+        return
+
+    hdr = st.columns([2, 1, 1, 2, 2, 1, 1, 1])
+    for col, label in zip(hdr, ["Numero", "Azienda", "Tipo", "Cliente",
+                                 "Data", "Utente", "PDF", "HTML"]):
+        col.markdown(f"**{label}**")
+    for e in entries:
+        c = st.columns([2, 1, 1, 2, 2, 1, 1, 1])
+        c[0].write(e.get("number") or "—")
+        c[1].write(e.get("company") or "")
+        c[2].write(DOC_TYPE_LABELS.get(e.get("doc_type"), e.get("doc_type", "")))
+        c[3].write(e.get("buyer") or "")
+        c[4].write((e.get("doc_date") or e.get("issued_at", ""))[:10])
+        c[5].write(e.get("user") or "")
+        if e.get("pdf_key"):
+            data, fname = arch.get_file(e["id"], "pdf")
+            c[6].download_button("⬇️", data, file_name=fname, mime="application/pdf",
+                                 key=f"da_pdf_{e['id']}")
+        else:
+            c[6].write("—")
+        hdata, hname = arch.get_file(e["id"], "html")
+        c[7].download_button("⬇️", hdata, file_name=hname, mime="text/html",
+                             key=f"da_html_{e['id']}")
+
+
 def section_documents():
     st.subheader("📄 Documenti")
-    sub = st.tabs(["🧾 Proforma", "📦 Packing list", "📜 Dichiarazioni (EUR1+EUC)"])
+    sub = st.tabs(["🧾 Proforma", "📦 Packing list", "📜 Dichiarazioni (EUR1+EUC)",
+                   "📚 Documenti emessi"])
     with sub[0]:
         _doc_proforma()
     with sub[1]:
         _doc_packing()
     with sub[2]:
         _doc_declarations()
+    with sub[3]:
+        _doc_archive_view()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

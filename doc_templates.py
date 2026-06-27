@@ -491,6 +491,8 @@ def render_forms(f):
     )
     inv_date = fmtdate(e.get("invDate")) if e.get("invDate") else "…"
     sign_bit = (", " + esc(fmtdate(e.get("signDate")))) if e.get("signDate") else ""
+    fwd = esc(e.get("forwarder") or "BS CARGO SCS SRL")
+    dog = esc(e.get("doganalista") or "MASSIMO TURINELLI")
     eur1 = (
         '<div class="doc bcw ef-doc">\n'
         f'    {_bcw_letterhead(co)}\n'
@@ -501,8 +503,8 @@ def render_forms(f):
         f'    <p>Che le merci meglio descritte nella fattura di esportazione nr <b>{esc(e.get("invNo") or "…")}</b> del <b>{esc(inv_date)}</b> soddisfano le condizioni richieste per ottenere il certificato EUR1</p>\n'
         f'    <p>In particolare dichiara che le merci di cui sopra sono di origine preferenziale comunitaria in base a quanto previsto negli accordi tra U.E. e <b>{esc(e.get("dest") or "…")}</b></p>\n'
         '    <p>A riscontro delle condizioni sopra dichiarate, oltre alla documentazione prodotta contestualmente alla domanda di rilascio del certificato EUR1, si impegna espressamente a fornire all\'Autorità Doganale qualsiasi altra prova documentale o giustificazione che quest\'ultima richiede, nonché ad accettare ogni eventuale controllo.</p>\n'
-        '    <p>Per quanto sopra con la presente, si conferisce espresso incarico a formulare alla Dogana, domanda di rilascio del certificato EUR1 in relazione alle merci di cui sopra, alla Società BS CARGO SCS SRL</p>\n'
-        '    <p>La Società BS CARGO SCS ed il doganalista MASSIMO TURINELLI vengono autorizzati a compiere tutto quanto necessario per l\'ottenimento del certificato EUR1 e sono fin d\'ora espressamente manlevati da qualsiasi responsabilità legale direttamente ed indirettamente all\'espletamento della procedura oggetto del presente incarico</p>\n'
+        f'    <p>Per quanto sopra con la presente, si conferisce espresso incarico a formulare alla Dogana, domanda di rilascio del certificato EUR1 in relazione alle merci di cui sopra, alla Società {fwd}</p>\n'
+        f'    <p>La Società {fwd} ed il doganalista {dog} vengono autorizzati a compiere tutto quanto necessario per l\'ottenimento del certificato EUR1 e sono fin d\'ora espressamente manlevati da qualsiasi responsabilità legale direttamente ed indirettamente all\'espletamento della procedura oggetto del presente incarico</p>\n'
         f'    <p style="margin-top:24px">Luogo e data: <b>{esc(e.get("place") or "")}{sign_bit}</b></p>\n'
         '    <div class="ef-sign">\n'
         f'      <div>Nome e cognome di chi firma<br><b>{esc(e.get("rep") or "")}</b></div>\n'
