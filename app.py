@@ -172,11 +172,18 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
                 model="claude-sonnet-4-6", max_tokens=8192,
                 system=system_msg, messages=[{"role": "user", "content": content}])
             break
+        except anthropic.AuthenticationError:
+            return None, ("Chiave API Anthropic non valida o scaduta. Aggiorna "
+                          "ANTHROPIC_API_KEY nei secrets dell'app (o inseriscine una "
+                          "valida nella barra laterale). Puoi comunque inserire i dati "
+                          "manualmente qui sotto.")
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 last_exc = e; time.sleep(10 * (attempt + 1))
             else:
-                raise
+                return None, f"Errore API Claude ({e.status_code}): {e}"
+        except anthropic.APIConnectionError as e:
+            return None, f"Connessione a Claude non riuscita: {e}"
     else:
         return None, f"Claude API sovraccarica: {last_exc}"
 
