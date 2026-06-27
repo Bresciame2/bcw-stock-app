@@ -521,28 +521,79 @@ def section_scarico(api_key):
         submit = st.form_submit_button("✅ Registra scarico", type="primary")
     if submit:
         def _do(_p):
-            ok, errs = [], []
+            ok, errs, fixes = [], [], []
             for _, r in edited.iterrows():
-                res = stock_agent.add_scarico(r.to_dict())
-                (ok if res["status"] == "success" else errs).append(res)
-            return ok, errs
+                d = r.to_dict()
+                res = stock_agent.add_scarico(d)
+                if res["status"] == "success":
+                    ok.append(res)
+                else:
+                    errs.append(res)
+                    # keep only IN-STOCK close matches as one-click fixes
+                    instock = [s for s in res.get("suggestions", [])
+                               if not s.get("venduto")]
+                    if instock:
+                        fixes.append({"data": d, "best": instock[0],
+                                      "message": res["message"]})
+            return ok, errs, fixes
         try:
-            ok, errs = with_workbook(_do)
+            ok, errs, fixes = with_workbook(_do)
         except Exception as e:
             flash(f"Errore durante il salvataggio dello scarico: {e}", "error")
             st.rerun()
+        st.session_state["scarico_fixes"] = fixes
         if ok:
             st.session_state.pop("items_SCARICO", None)
             if errs:
-                flash(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti: "
-                      + " | ".join(e["message"] for e in errs), "warning")
+                flash(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti.", "warning")
             else:
                 flash(f"{len(ok)} scarichi registrati nel registro condiviso.")
         elif errs:
-            flash("Scarico non riuscito: "
-                  + " | ".join(e["message"] for e in errs), "error")
+            flash(f"{len(errs)} scarichi non riusciti — vedi sotto.", "error")
         else:
             flash("Nessuno scarico registrato — controlla i dati inseriti.", "warning")
+        st.rerun()
+
+    _render_scarico_fixes()
+
+
+def _render_scarico_fixes():
+    """Show not-found scarichi that have a close in-stock serial, with a button
+    to apply the correction and register the sale automatically."""
+    fixes = st.session_state.get("scarico_fixes") or []
+    if not fixes:
+        return
+    st.markdown("---")
+    st.markdown("#### 🔧 Matricole non trovate — correzioni suggerite")
+    st.caption("Probabili errori di lettura dal PDF. Controlla e premi **Applica** "
+               "per registrare la vendita con la matricola corretta.")
+    for i, fx in enumerate(fixes):
+        d, best = fx["data"], fx["best"]
+        orig = str(d.get("matr_arma") or "").strip()
+        sim = int(round(best["score"] * 100))
+        c1, c2, c3 = st.columns([3, 3, 2])
+        c1.markdown(f"📄 letta: **{orig or '(vuota)'}**"
+                    + (f" · cliente {d.get('cliente')}" if d.get("cliente") else ""))
+        c2.markdown(f"✅ suggerita: **{best['matricola']}** "
+                    f"<span style='color:gray'>({sim}% · riga {best['riga']})</span>",
+                    unsafe_allow_html=True)
+        if c3.button("Applica", key=f"fix_scar_{i}", type="primary"):
+            d2 = dict(d); d2["matr_arma"] = best["matricola"]
+            try:
+                res = with_workbook(lambda _p: stock_agent.add_scarico(d2))
+            except Exception as e:
+                flash(f"Errore: {e}", "error"); st.rerun()
+            if res["status"] == "success":
+                flash(f"Scarico registrato con matricola {best['matricola']} "
+                      f"(riga {res['row']}).")
+                lst = st.session_state.get("scarico_fixes") or []
+                st.session_state["scarico_fixes"] = [
+                    x for j, x in enumerate(lst) if j != i]
+            else:
+                flash(res["message"], "error")
+            st.rerun()
+    if st.button("Ignora tutti", key="fix_scar_clear"):
+        st.session_state["scarico_fixes"] = []
         st.rerun()
 
 

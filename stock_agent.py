@@ -201,6 +201,37 @@ def _to_float(v):
         return None
 
 
+def suggest_serials(ws, matr, limit=3, only_instock=True):
+    """Return up to `limit` matricole closest to `matr` (likely OCR misreads).
+
+    Uses difflib similarity with a digit/letter-confusion normalization
+    (O↔0, I/L↔1, S↔5, B↔8, Z↔2, G↔6) so that e.g. 'F36490IT17' suggests
+    'F364901T17'. Each result is a dict: {matricola, riga, venduto, score}."""
+    import difflib
+    target = str(matr or "").strip().upper()
+    if not target:
+        return []
+    confuse = str.maketrans({"O": "0", "I": "1", "L": "1", "S": "5",
+                             "B": "8", "Z": "2", "G": "6", "Q": "0"})
+    def norm(s):
+        return str(s).strip().upper().translate(confuse)
+    tnorm = norm(target)
+    cands = []
+    for r in range(3, ws.max_row + 1):
+        cv = ws.cell(r, COL["MATR_ARMA"]).value
+        if cv in (None, "", "N/D"):
+            continue
+        sold = _is_sold(ws, r)
+        if only_instock and sold:
+            continue
+        cs = str(cv).strip().upper()
+        score = difflib.SequenceMatcher(None, tnorm, norm(cs)).ratio()
+        cands.append({"matricola": cs, "riga": r, "venduto": sold, "score": score})
+    cands.sort(key=lambda c: c["score"], reverse=True)
+    # only keep reasonably-close suggestions
+    return [c for c in cands if c["score"] >= 0.6][:limit]
+
+
 # ── VALIDATION / HARDENING ────────────────────────────────────────────────────
 
 def validate_workbook():
@@ -362,8 +393,19 @@ def add_scarico(data):
 
     row = find_item_row(ws, data)
     if row is None:
-        return {"status": "error",
-                "message": "Articolo non trovato in MAGAZZINO. Controlla matr_arma o n_operazione."}
+        _matr = (str(data.get("matr_arma") or "")).strip()
+        _nop = data.get("n_operazione") or ""
+        _id = f"matricola '{_matr or '(vuota)'}'" + (f" / n.op {_nop}" if _nop else "")
+        sugg = suggest_serials(ws, _matr) if _matr else []
+        msg = (f"Articolo non trovato in MAGAZZINO ({_id}). "
+               "Può essere una matricola letta male dal PDF, oppure l'arma non è "
+               "in giacenza BCW.")
+        if sugg:
+            hint = ", ".join(
+                f"{s['matricola']}" + (" [già venduto]" if s["venduto"] else "")
+                for s in sugg)
+            msg += f" Forse intendevi: {hint}?"
+        return {"status": "error", "message": msg, "suggestions": sugg}
 
     if ws.cell(row, COL["V"]).value not in (None, 0, ""):
         existing_client = ws.cell(row, COL["CLIENTE"]).value
