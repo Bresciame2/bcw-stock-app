@@ -175,12 +175,12 @@ def get_max_operazione(ws):
 
 
 def find_item_row(ws, data):
-    matr = str(data.get("matr_arma", "")).strip()
+    matr = str(data.get("matr_arma", "")).strip().upper()
     n_op = data.get("n_operazione")
     for r in range(3, ws.max_row + 1):
         if matr and matr not in ("", "N/D"):
             cell_val = ws.cell(r, COL["MATR_ARMA"]).value
-            if cell_val is not None and str(cell_val).strip() == matr:
+            if cell_val is not None and str(cell_val).strip().upper() == matr:
                 return r
         if n_op:
             cell_val = ws.cell(r, COL["N_OPERAZIONE"]).value
