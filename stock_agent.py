@@ -416,6 +416,54 @@ def cerca_item(data):
     return result
 
 
+def search_items(term, limit=300):
+    """Free-text search across MARCA / MODELLO / MATR_ARMA / MATR_CANNA /
+    CALIBRO / TIPOLOGIA, case-insensitive substring. Returns EVERY matching
+    row (in stock or sold) so colleagues can look a gun up by brand or model,
+    not only by matricola. Skips empty/summary rows. For the Cerca tab."""
+    term = (term or "").strip().lower()
+    if not term:
+        return {"status": "empty", "count": 0, "results": []}
+    wb = load_wb(); ws = wb["MAGAZZINO"]
+    out = []
+    for r in range(3, ws.max_row + 1):
+        tip = ws.cell(r, COL["TIPOLOGIA"]).value
+        if tip in (None, ""):
+            continue
+        if ws.cell(r, COL["DATA_CARICO"]).value in (None, "") and \
+           ws.cell(r, COL["FORNITORE"]).value in (None, ""):
+            continue
+        fields = [
+            str(ws.cell(r, COL["MARCA"]).value or ""),
+            str(ws.cell(r, COL["MODELLO"]).value or ""),
+            str(ws.cell(r, COL["MATR_ARMA"]).value or ""),
+            str(ws.cell(r, COL["MATR_CANNA"]).value or ""),
+            str(ws.cell(r, COL["CALIBRO"]).value or ""),
+            str(tip),
+        ]
+        if not any(term in f.lower() for f in fields):
+            continue
+        dc = ws.cell(r, COL["DATA_CARICO"]).value
+        if isinstance(dc, datetime):
+            dc = dc.strftime("%d/%m/%Y")
+        out.append({
+            "row": r,
+            "n_operazione": ws.cell(r, COL["N_OPERAZIONE"]).value,
+            "data_carico": dc,
+            "tipologia": str(tip).strip(),
+            "calibro": str(ws.cell(r, COL["CALIBRO"]).value or "").strip(),
+            "marca": str(ws.cell(r, COL["MARCA"]).value or "").strip(),
+            "modello": str(ws.cell(r, COL["MODELLO"]).value or "").strip(),
+            "matr_arma": str(ws.cell(r, COL["MATR_ARMA"]).value or "").strip(),
+            "matr_canna": str(ws.cell(r, COL["MATR_CANNA"]).value or "").strip(),
+            "fornitore": str(ws.cell(r, COL["FORNITORE"]).value or "").strip(),
+            "stato": "VENDUTO" if _is_sold(ws, r) else "IN GIACENZA",
+        })
+        if len(out) >= limit:
+            break
+    return {"status": "ok", "count": len(out), "results": out}
+
+
 # ── STATO / PER-PRODOTTO ──────────────────────────────────────────────────────
 
 def _is_sold(ws, r):
