@@ -138,6 +138,18 @@ tipologia,calibro,marca,modello,matr_arma,matr_canna,matr_agg,fornitore,costo,co
 - date: formato DD/MM/YYYY
 - quantita: intero (default 1)
 Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
+    elif operation_type == "PERMIT":
+        fields_prompt = """Documento: PERMESSO/AUTORIZZAZIONE DI ESPORTAZIONE armi
+(licenza di esportazione, autorizzazione UAMA, nulla osta, carnet ATA, EUC).
+Estrai UN SOLO oggetto JSON con questi campi (null se assente):
+numero,data_emissione,data_scadenza,paese_destinazione,cliente,tipo,matricole
+- numero: numero del permesso / ATA / autorizzazione (questo è il N. ATA)
+- date: formato DD/MM/YYYY
+- paese_destinazione: paese di destinazione dell'export
+- cliente: destinatario / end user
+- tipo: uno tra "Licenza Esportazione","Autorizzazione UAMA","EUC (End User Certificate)","Transito / Brokering","Altro"
+- matricole: array delle matricole arma elencate nel permesso (vuoto se non elencate)
+Output: UN SOLO oggetto JSON {...}, nessun testo fuori dal JSON."""
     else:
         fields_prompt = """Documento: fattura vendita armeria. Estrai OGNI arma venduta.
 Campi per oggetto (usa null se assente):
@@ -498,6 +510,62 @@ def section_carico(api_key):
         st.rerun()
 
 
+def _extract_permit_block(api_key, invoice_no=""):
+    """Upload the export permit, AI-extract the ATA number + metadata, archive
+    the file in the licence section, and return the ATA number to pre-fill the
+    scarico rows. The extracted permit is kept in session_state['scarico_permit']."""
+    with st.expander("📑 Permesso di esportazione (estrae il N. ATA e archivia la licenza)",
+                     expanded=False):
+        permit = st.session_state.get("scarico_permit")
+        if permit:
+            st.success(f"Permesso applicato — N. ATA **{permit.get('numero','—')}** "
+                       f"· {permit.get('tipo','—')} · {permit.get('paese_destinazione','—')} "
+                       f"· archiviato in 📁 Licenze.")
+            if st.button("🗑️ Rimuovi permesso", key="permit_clear"):
+                st.session_state.pop("scarico_permit", None)
+                st.session_state.pop("scarico_ata", None)
+                st.rerun()
+            return permit.get("numero", "")
+        up = st.file_uploader("Permesso / licenza export (PDF, JPG, PNG)",
+                              type=["pdf", "jpg", "jpeg", "png", "webp"],
+                              key="permit_up")
+        if up and st.button("📑 Estrai N. ATA e archivia", key="permit_go", type="primary"):
+            if not api_key:
+                flash("Serve la API key (barra laterale) per leggere il permesso.", "error")
+                st.rerun()
+            raw = up.read()
+            with st.spinner("Lettura permesso…"):
+                got, err = extract_with_claude(raw, up.type or "application/pdf",
+                                               "PERMIT", api_key)
+            if err and not got:
+                flash(f"Estrazione permesso non riuscita: {err}", "error")
+                st.rerun()
+            p = (got[0] if got else {}) or {}
+            # archive the file in the licence section
+            try:
+                arch = LicenseArchive(get_backend())
+                arch.add(raw, up.name, {
+                    "doc_type": p.get("tipo") or "Licenza Esportazione",
+                    "number": p.get("numero", ""),
+                    "country": p.get("paese_destinazione", ""),
+                    "counterparty": p.get("cliente", ""),
+                    "issue_date": p.get("data_emissione", ""),
+                    "expiry_date": p.get("data_scadenza", ""),
+                    "invoice_no": invoice_no or "",
+                    "tags": ["export", "scarico"],
+                    "notes": ("Matricole: " + ", ".join(p.get("matricole", [])))
+                             if p.get("matricole") else "",
+                })
+            except Exception as e:
+                flash(f"N. ATA estratto ma archiviazione licenza non riuscita: {e}",
+                      "warning")
+            st.session_state["scarico_permit"] = p
+            st.session_state["scarico_ata"] = p.get("numero", "")
+            flash(f"N. ATA {p.get('numero','(non letto)')} applicato e licenza archiviata.")
+            st.rerun()
+    return st.session_state.get("scarico_ata", "")
+
+
 def section_scarico(api_key):
     st.subheader("➖ Scarico (vendita)")
     sbulk = _bulk_excel("scarico", key="scarico")
@@ -506,13 +574,15 @@ def section_scarico(api_key):
         st.success(f"{len(sbulk)} righe importate dall'Excel.")
         st.rerun()
     items = _extract_block("SCARICO", api_key) or [{}]
+    invoice_no = next((it.get("n_fattura") for it in items if it.get("n_fattura")), "")
+    ata = _extract_permit_block(api_key, invoice_no)
     rows = [{
         "matr_arma": it.get("matr_arma") or "", "cliente": it.get("cliente") or "",
         "prezzo_vendita": float(it.get("prezzo_vendita") or 0),
         "data_scarico": it.get("data_fattura_vendita") or it.get("data_scarico") or "",
         "n_fattura": it.get("n_fattura") or "",
         "data_fattura_vendita": it.get("data_fattura_vendita") or "",
-        "n_ata": it.get("n_ata") or "", "titolo_acquisto": it.get("titolo_acquisto") or "",
+        "n_ata": it.get("n_ata") or ata or "", "titolo_acquisto": it.get("titolo_acquisto") or "",
     } for it in items]
     with st.form("scarico_form"):
         edited = st.data_editor(
@@ -544,6 +614,10 @@ def section_scarico(api_key):
         st.session_state["scarico_fixes"] = fixes
         if ok:
             st.session_state.pop("items_SCARICO", None)
+            if not errs:
+                # all done — reset the permit so the next sale starts clean
+                st.session_state.pop("scarico_permit", None)
+                st.session_state.pop("scarico_ata", None)
             if errs:
                 flash(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti.", "warning")
             else:
