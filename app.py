@@ -33,6 +33,42 @@ from license_archive import LicenseArchive, DOC_TYPES
 
 st.set_page_config(page_title="BCW Magazzino", page_icon="🔫", layout="wide")
 
+
+# ── access gate ───────────────────────────────────────────────────────────────
+# The app is deployed as a "public" Streamlit app (the one private slot is taken),
+# so a password gate keeps it restricted to colleagues. Set APP_PASSWORD in the
+# Streamlit secrets. Everything below the gate only runs once authenticated.
+def _check_password():
+    expected = None
+    try:
+        expected = st.secrets["APP_PASSWORD"]
+    except Exception:
+        expected = os.environ.get("APP_PASSWORD")
+
+    if not expected:
+        st.error("APP_PASSWORD non configurata. Aggiungila nei secrets dell'app "
+                 "(Streamlit Cloud → Settings → Secrets) per abilitare l'accesso.")
+        st.stop()
+
+    if st.session_state.get("_authed"):
+        return
+
+    st.markdown("## 🔒 BCW Magazzino")
+    st.caption("Inserisci la password per accedere.")
+    pw = st.text_input("Password", type="password", key="_pw_input")
+    if st.button("Entra"):
+        if pw == expected:
+            st.session_state["_authed"] = True
+            st.rerun()
+        else:
+            st.error("Password errata.")
+    if not st.session_state.get("_authed"):
+        st.stop()
+
+
+_check_password()
+
+
 # Live typology list, read from the workbook's INVENTARIO dropdown source so the
 # Carico selectbox always mirrors the real menu (falls back to the constant).
 try:
