@@ -166,11 +166,16 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
         content = [{"type": "text", "text": f"Documento:\n{text}\n\n{fields_prompt}"}]
 
     last_exc = None
+    response = None
     for attempt in range(3):
         try:
-            response = client.messages.create(
-                model="claude-sonnet-4-6", max_tokens=32000,
-                system=system_msg, messages=[{"role": "user", "content": content}])
+            # Stream so large max_tokens is allowed (non-streaming has a
+            # timeout-based cap that rejects big outputs).
+            with client.messages.stream(
+                    model="claude-sonnet-4-6", max_tokens=32000,
+                    system=system_msg,
+                    messages=[{"role": "user", "content": content}]) as stream:
+                response = stream.get_final_message()
             break
         except anthropic.AuthenticationError:
             return None, ("Chiave API Anthropic non valida o scaduta. Aggiorna "
