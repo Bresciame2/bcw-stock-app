@@ -175,13 +175,40 @@ def get_max_operazione(ws):
     return max_op
 
 
+def _split_serials(raw):
+    """Split a (possibly combined) serial string into individual tokens.
+
+    Doppiette (double guns) are written on the invoice as
+    'armaSerial/barrelSerial' (e.g. 'BL093817H/CL096488L'), but in the
+    workbook the gun serial lives in MATR_ARMA and the barrel serial in
+    MATR_CANNA as separate columns. Accept '/', '\\', '|', '+', ';' or
+    whitespace as separators. Returns a de-duplicated list of UPPER tokens."""
+    import re
+    parts = re.split(r"[\/\\|+;,\s]+", str(raw or "").strip().upper())
+    out, seen = [], set()
+    for p in parts:
+        p = p.strip()
+        if p and p not in ("", "N/D") and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def find_item_row(ws, data):
     matr = str(data.get("matr_arma", "")).strip().upper()
     n_op = data.get("n_operazione")
+    tokens = _split_serials(matr) if matr and matr not in ("", "N/D") else []
     for r in range(3, ws.max_row + 1):
-        if matr and matr not in ("", "N/D"):
-            cell_val = ws.cell(r, COL["MATR_ARMA"]).value
-            if cell_val is not None and str(cell_val).strip().upper() == matr:
+        if tokens:
+            arma = ws.cell(r, COL["MATR_ARMA"]).value
+            canna = ws.cell(r, COL["MATR_CANNA"]).value
+            arma_s = str(arma).strip().upper() if arma is not None else ""
+            canna_s = str(canna).strip().upper() if canna is not None else ""
+            # Match if every token corresponds to this row's arma/canna serials.
+            # Single serial: matches arma OR canna. Combined doppietta serial:
+            # both tokens must be present across the two columns of the row.
+            row_serials = {s for s in (arma_s, canna_s) if s}
+            if row_serials and all(t in row_serials for t in tokens):
                 return r
         if n_op:
             cell_val = ws.cell(r, COL["N_OPERAZIONE"]).value
