@@ -41,6 +41,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 EXCEL_FILE = os.path.join(SCRIPT_DIR, "MAGAZZINO BCW fixed.xlsx")
 
 PINK_FILL = PatternFill(start_color="FFB6C1", end_color="FFB6C1", fill_type="solid")
+NO_FILL = PatternFill(fill_type=None)
 
 # ── valid dropdown values ─────────────────────────────────────────────────────
 # The authoritative list of TIPOLOGIE is the real workbook's dropdown source:
@@ -410,6 +411,112 @@ def _update_registro_scarico(wb, n_operazione, data):
                     break
             except (ValueError, TypeError):
                 pass
+
+
+def _clear_registro_scarico(wb, n_operazione):
+    """Clear only the SCARICO columns (DATA/ACQUIRENTE/TITOLO = 14/15/16) of the
+    REGISTRO row for this operazione, leaving the carico entry intact."""
+    ws_reg = wb["REGISTRO"]
+    for r in range(4, ws_reg.max_row + 1):
+        v = ws_reg.cell(r, 1).value
+        if v is not None:
+            try:
+                if int(v) == n_operazione:
+                    for c in (14, 15, 16):
+                        ws_reg.cell(r, c).value = None
+                    return True
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
+def _clear_registro_row(wb, n_operazione):
+    """Clear the ENTIRE REGISTRO row for this operazione (carico mistake)."""
+    ws_reg = wb["REGISTRO"]
+    for r in range(4, ws_reg.max_row + 1):
+        v = ws_reg.cell(r, 1).value
+        if v is not None:
+            try:
+                if int(v) == n_operazione:
+                    for c in range(1, 17):
+                        ws_reg.cell(r, c).value = None
+                    return True
+            except (ValueError, TypeError):
+                pass
+    return False
+
+
+def reverse_scarico(data):
+    """Undo a sale recorded by mistake: clear the sold columns so the gun goes
+    back IN GIACENZA, and clear the REGISTRO scarico columns. Safe and reversible
+    (only clears cells, never shifts rows). Match by matr_arma or n_operazione."""
+    wb = load_wb()
+    ws = wb["MAGAZZINO"]
+    row = find_item_row(ws, data)
+    if row is None:
+        return {"status": "error",
+                "message": "Articolo non trovato in MAGAZZINO. Controlla matr_arma o n_operazione."}
+    if ws.cell(row, COL["V"]).value in (None, 0, ""):
+        return {"status": "error",
+                "message": f"Articolo alla riga {row} non risulta venduto: niente da annullare."}
+    for c in range(COL["PREZZO_VENDITA"], COL["CLIENTE"] + 1):
+        ws.cell(row, c).value = None
+        ws.cell(row, c).fill = NO_FILL
+    n_op = ws.cell(row, COL["N_OPERAZIONE"]).value
+    if n_op:
+        _clear_registro_scarico(wb, int(n_op))
+    save_wb(wb)
+    return {"status": "success",
+            "message": f"Scarico annullato (riga {row}). L'articolo è di nuovo in giacenza.",
+            "row": row, "n_operazione": int(n_op) if n_op else None}
+
+
+def delete_carico(data, allow_registro_gap=False):
+    """Cancel a load entered by mistake. Clears the MAGAZZINO row IN PLACE — no
+    row shifting, so the per-row formulas of every other row stay valid — and
+    clears the matching REGISTRO row if present.
+
+    Refuses if the item is already sold (annulla lo scarico prima). If the item
+    is in the REGISTRO and is NOT the last operazione, deleting leaves a gap in
+    the legal sequence: it returns a 'confirm' status unless allow_registro_gap
+    is True."""
+    wb = load_wb()
+    ws = wb["MAGAZZINO"]
+    row = find_item_row(ws, data)
+    if row is None:
+        return {"status": "error",
+                "message": "Articolo non trovato in MAGAZZINO. Controlla matr_arma o n_operazione."}
+    if _is_sold(ws, row):
+        return {"status": "error",
+                "message": f"Articolo alla riga {row} risulta VENDUTO. Annulla prima lo "
+                           f"scarico, poi elimina il carico."}
+
+    n_op = ws.cell(row, COL["N_OPERAZIONE"]).value
+    n_op_i = None
+    try:
+        n_op_i = int(n_op) if n_op not in (None, "") else None
+    except (ValueError, TypeError):
+        n_op_i = None
+
+    if n_op_i is not None and not allow_registro_gap:
+        if n_op_i != get_max_operazione(ws):
+            return {"status": "confirm", "needs_confirm": True, "row": row,
+                    "n_operazione": n_op_i,
+                    "message": f"L'operazione {n_op_i} non è l'ultima del registro: "
+                               f"eliminandola resterà un buco nella sequenza legale. "
+                               f"Confermi l'eliminazione?"}
+
+    if n_op_i is not None:
+        _clear_registro_row(wb, n_op_i)
+
+    for c in range(1, COL["CLIENTE"] + 1):
+        ws.cell(row, c).value = None
+        ws.cell(row, c).fill = NO_FILL
+
+    save_wb(wb)
+    return {"status": "success",
+            "message": f"Carico eliminato (riga {row}).",
+            "row": row, "n_operazione": n_op_i}
 
 
 # ── CERCA ────────────────────────────────────────────────────────────────────

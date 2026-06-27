@@ -308,6 +308,69 @@ def section_search():
                 else:
                     st.warning("Articolo non trovato.")
 
+    # --- cancel / delete (mistake correction) ---
+    with st.expander("🗑️ Annulla scarico / Elimina carico (correzione errori)"):
+        st.caption("Usa questi strumenti solo per correggere un errore di "
+                   "inserimento. Le operazioni modificano il registro legale.")
+        d1, d2 = st.columns(2)
+        del_matr = d1.text_input("Matricola arma", key="del_matr")
+        del_nop = d2.text_input("N. operazione", key="del_nop")
+
+        def _del_query():
+            q = {}
+            if del_matr.strip():
+                q["matr_arma"] = del_matr.strip()
+            if del_nop.strip():
+                q["n_operazione"] = del_nop.strip()
+            return q
+
+        st.markdown("**↩️ Annulla uno scarico** — rimette l'articolo in giacenza.")
+        if st.button("↩️ Annulla scarico", key="rev_scarico_go"):
+            q = _del_query()
+            if not q:
+                st.warning("Inserisci una matricola o un n. operazione.")
+            else:
+                r = with_workbook(lambda _p: stock_agent.reverse_scarico(q))
+                if r.get("status") == "success":
+                    st.success(r["message"])
+                else:
+                    st.error(r.get("message", "Operazione non riuscita."))
+
+        st.divider()
+        st.markdown("**🗑️ Elimina un carico** — cancella l'articolo dal "
+                    "magazzino (solo se non ancora venduto).")
+        if st.button("🗑️ Elimina carico", key="del_carico_go"):
+            q = _del_query()
+            if not q:
+                st.warning("Inserisci una matricola o un n. operazione.")
+            else:
+                r = with_workbook(lambda _p: stock_agent.delete_carico(q))
+                if r.get("status") == "confirm":
+                    st.session_state["del_confirm"] = q
+                    st.warning(r["message"])
+                elif r.get("status") == "success":
+                    st.session_state.pop("del_confirm", None)
+                    st.success(r["message"])
+                else:
+                    st.error(r.get("message", "Operazione non riuscita."))
+
+        if st.session_state.get("del_confirm"):
+            st.error("⚠️ Questa eliminazione lascerà un buco nella sequenza "
+                     "del registro legale.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("✅ Conferma eliminazione", key="del_confirm_yes"):
+                q = st.session_state["del_confirm"]
+                r = with_workbook(
+                    lambda _p: stock_agent.delete_carico(q, allow_registro_gap=True))
+                st.session_state.pop("del_confirm", None)
+                if r.get("status") == "success":
+                    st.success(r["message"])
+                else:
+                    st.error(r.get("message", "Operazione non riuscita."))
+            if cc2.button("❌ Annulla", key="del_confirm_no"):
+                st.session_state.pop("del_confirm", None)
+                st.info("Eliminazione annullata.")
+
 
 def _extract_block(op_key, api_key):
     docs = st.file_uploader("DDT / fatture / foto (PDF, JPG, PNG) — multipli",
