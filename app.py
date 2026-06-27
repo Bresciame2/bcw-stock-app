@@ -263,23 +263,48 @@ def section_dashboard():
 
 def section_search():
     st.subheader("🔎 Cerca articolo")
-    col1, col2 = st.columns(2)
-    matr = col1.text_input("Matricola arma")
-    n_op = col2.text_input("N. operazione")
-    if st.button("Cerca", type="primary"):
-        q = {}
-        if matr.strip():
-            q["matr_arma"] = matr.strip()
-        if n_op.strip():
-            q["n_operazione"] = n_op.strip()
-        if not q:
-            st.warning("Inserisci una matricola o un n. operazione."); return
-        res = with_workbook(lambda _p: stock_agent.cerca_item(q), read_only=True)
-        if res.get("status") == "found":
-            st.success(f"Trovato alla riga {res['row']}.")
-            st.json({k: v for k, v in res.items() if k not in ("status",)})
+
+    # --- free-text search: marca / modello / matricola / calibro / tipologia ---
+    st.markdown("**Ricerca per marca, modello, matricola, calibro…**")
+    term = st.text_input("Cerca", key="search_term",
+                         placeholder="es. Beretta, 686, 12, FUCILE…")
+    if st.button("Cerca", type="primary", key="search_go") and term.strip():
+        res = with_workbook(lambda _p: stock_agent.search_items(term), read_only=True)
+        results = res.get("results", [])
+        if not results:
+            st.warning("Nessun articolo corrispondente.")
         else:
-            st.warning("Articolo non trovato.")
+            st.success(f"{res['count']} articoli trovati"
+                       + (" (mostrati i primi 300)" if res["count"] >= 300 else "") + ".")
+            df = pd.DataFrame([{
+                "Stato": r["stato"], "Tipologia": r["tipologia"], "Marca": r["marca"],
+                "Modello": r["modello"], "Calibro": r["calibro"],
+                "Matr. arma": r["matr_arma"], "Matr. canna": r["matr_canna"],
+                "N.op": r["n_operazione"], "Data carico": r["data_carico"],
+                "Fornitore": r["fornitore"], "Riga": r["row"],
+            } for r in results])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
+    # --- exact lookup by matricola / n. operazione (returns the full record) ---
+    with st.expander("Ricerca esatta per matricola / n. operazione"):
+        col1, col2 = st.columns(2)
+        matr = col1.text_input("Matricola arma", key="exact_matr")
+        n_op = col2.text_input("N. operazione", key="exact_nop")
+        if st.button("Cerca esatto", key="exact_go"):
+            q = {}
+            if matr.strip():
+                q["matr_arma"] = matr.strip()
+            if n_op.strip():
+                q["n_operazione"] = n_op.strip()
+            if not q:
+                st.warning("Inserisci una matricola o un n. operazione.")
+            else:
+                res = with_workbook(lambda _p: stock_agent.cerca_item(q), read_only=True)
+                if res.get("status") == "found":
+                    st.success(f"Trovato alla riga {res['row']}.")
+                    st.json({k: v for k, v in res.items() if k not in ("status",)})
+                else:
+                    st.warning("Articolo non trovato.")
 
 
 def _extract_block(op_key, api_key):
@@ -406,6 +431,22 @@ def section_registro():
                                    mime="application/pdf")
         else:
             st.info("PDF non generato (reportlab non installato) — usa l'Excel.")
+
+    st.divider()
+    st.markdown("**📥 Scarica il file MAGAZZINO completo (tutti i fogli, aggiornato)**")
+    st.caption("Scarica l'intero workbook così com'è nello storage condiviso — "
+               "ISTRUZIONI, INVENTARIO, MAGAZZINO, REGISTRO, BASE, PRINT.")
+    if st.button("Prepara download MAGAZZINO completo", key="dl_full_wb"):
+        try:
+            data = get_backend().read_bytes(storage.workbook_name())
+            st.download_button(
+                "⬇️ Scarica MAGAZZINO completo (.xlsx)", data,
+                file_name=f"{os.path.splitext(storage.workbook_name())[0]} "
+                          f"{datetime.now():%Y-%m-%d %H%M}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_full_wb_btn")
+        except Exception as e:
+            st.error(f"Impossibile scaricare il workbook: {e}")
 
 
 def section_licenses():
@@ -655,12 +696,14 @@ def _doc_declarations():
     st.caption("EUR1 + End User Certificate (BCW). Emessi sulla fattura finale — "
                "non consumano un numero di proforma.")
     buyer = _buyer_inputs("ef")
-    st.markdown("**Dettagli dichiarazione**")
+    st.markdown("**Dettagli dichiarazione** — i dati BCW sono già precompilati (modificabili).")
+    BCW_SEAT = "Via Matteotti 311 – Gardone Val Trompia, 25063 (BS) – Italia"
     c1, c2 = st.columns(2)
-    rep = c1.text_input("Legale rappresentante (firma)", key="ef_rep")
+    rep = c1.text_input("Legale rappresentante (firma)", value="Antoine Abi Saab",
+                        key="ef_rep")
     sender = c2.text_input("Ditta mittente", value=doc_templates.COMPANIES["BCW"]["name"],
                            key="ef_sender")
-    seat = st.text_input("Sede ditta", key="ef_seat")
+    seat = st.text_input("Sede ditta", value=BCW_SEAT, key="ef_seat")
     c3, c4 = st.columns(2)
     inv_no = c3.text_input("N. fattura esportazione", key="ef_invno")
     inv_date = c4.date_input("Data fattura", key="ef_invdate")
@@ -668,15 +711,22 @@ def _doc_declarations():
     dest = c5.text_input("Paese di destinazione", key="ef_dest")
     contract = c6.text_input("N. contratto (opz.)", key="ef_contract")
     commodity = st.text_area("Descrizione dettagliata merce", key="ef_commodity")
+    st.markdown("**Spedizioniere incaricato** (default BS Cargo — modificabile)")
+    cf1, cf2 = st.columns(2)
+    forwarder = cf1.text_input("Società spedizioniere", value="BS CARGO SCS SRL",
+                               key="ef_forwarder")
+    doganalista = cf2.text_input("Doganalista", value="MASSIMO TURINELLI",
+                                 key="ef_doganalista")
     c7, c8 = st.columns(2)
-    place = c7.text_input("Luogo firma", key="ef_place")
+    place = c7.text_input("Luogo firma", value="Gardone Val Trompia", key="ef_place")
     sign_date = c8.date_input("Data firma", key="ef_signdate")
 
     if st.button("📜 Genera dichiarazioni (EUR1 + EUC)", type="primary", key="ef_gen"):
         f = {"company": "BCW", "buyer": buyer, "ef": {
             "rep": rep, "sender": sender, "seat": seat, "invNo": inv_no,
             "invDate": inv_date.isoformat(), "dest": dest, "contract": contract,
-            "commodity": commodity, "place": place, "signDate": sign_date.isoformat()}}
+            "commodity": commodity, "place": place, "signDate": sign_date.isoformat(),
+            "forwarder": forwarder, "doganalista": doganalista}}
         html = doc_templates.document_html(doc_templates.render_forms(f),
                                            f"EUR1-EUC {inv_no or ''}".strip())
         st.session_state["ef_result"] = html
