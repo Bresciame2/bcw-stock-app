@@ -664,12 +664,81 @@ def _render_export_check(invoice_items):
         st.warning(f"Controllo non disponibile: {e}")
         return
 
+    total = rep["matched"] + len(rep["only_invoice"]) + len(rep["only_permit"])
+    problems = (len(rep["only_invoice"]) + len(rep["only_permit"])
+                + len(rep["mismatches"]))
+
     if rep["ok"]:
-        st.success(f"✅ Tutto coincide: {rep['matched']} armi verificate "
-                   "(matricole, marche e calibri corrispondono tra fattura e permesso).")
+        st.success(f"✅ Conciliato — tutte le {rep['matched']} armi coincidono "
+                   "(matricole, marche e calibri tra fattura e permesso). "
+                   "Pronto per l'export.")
         return
 
-    st.error("⚠️ Discrepanze rilevate — da risolvere PRIMA dell'export:")
+    st.error(f"⚠️ {problems} discrepanze da risolvere prima dell'export "
+             f"· {rep['matched']} di {total} armi già conciliate.")
+    st.progress(rep["matched"] / total if total else 0.0,
+                text=f"{rep['matched']}/{total} conciliate — {problems} da sistemare")
+
+    # ── allineamento rapido (probabili errori di lettura OCR) ──────────────
+    import difflib
+    only_inv, only_per = rep["only_invoice"], rep["only_permit"]
+    if only_inv and only_per:
+        st.markdown("**Allineamento rapido matricole** — correggo il permesso "
+                    "sulla matricola della fattura/magazzino:")
+        inv_serials = [x["matr_arma"] for x in only_inv]
+        for pi, pitem in enumerate(only_per):
+            ps = pitem["matr_arma"]
+            best = max(inv_serials, default=None,
+                       key=lambda s: difflib.SequenceMatcher(
+                           None, stock_agent._norm_serial(ps),
+                           stock_agent._norm_serial(s)).ratio())
+            if not best:
+                continue
+            score = difflib.SequenceMatcher(
+                None, stock_agent._norm_serial(ps),
+                stock_agent._norm_serial(best)).ratio()
+            c1, c2, c3 = st.columns([3, 3, 2])
+            c1.markdown(f"📜 permesso: **{ps}**")
+            c2.markdown(f"📄 fattura: **{best}** "
+                        f"<span style='color:gray'>({int(score*100)}%)</span>",
+                        unsafe_allow_html=True)
+            if score >= 0.55 and c3.button("Allinea", key=f"algn_{pi}",
+                                           type="primary"):
+                for art in st.session_state["scarico_permit"]["articoli"]:
+                    cur = str(art.get("matricola")
+                              or art.get("matr_arma") or "").strip()
+                    if cur == ps:
+                        if "matricola" in art:
+                            art["matricola"] = best
+                        else:
+                            art["matr_arma"] = best
+                        break
+                st.rerun()
+
+    # ── modifica manuale del permesso ─────────────────────────────────────
+    with st.expander("✏️ Modifica manuale del permesso (per far coincidere tutto)"):
+        df = pd.DataFrame([
+            {"Matricola": a.get("matricola") or a.get("matr_arma") or "",
+             "Marca": a.get("marca") or a.get("brand") or "",
+             "Modello": a.get("modello") or a.get("model") or "",
+             "Calibro": a.get("calibro") or a.get("cal") or ""}
+            for a in permit_items])
+        edited = st.data_editor(df, use_container_width=True, hide_index=True,
+                                num_rows="dynamic", key="permit_editor")
+        if st.button("💾 Salva e ricontrolla", key="permit_save", type="primary"):
+            new_items = []
+            for _, r in edited.iterrows():
+                m = str(r["Matricola"]).strip()
+                if not m:
+                    continue
+                new_items.append({"matricola": m,
+                                  "marca": str(r["Marca"]).strip(),
+                                  "modello": str(r["Modello"]).strip(),
+                                  "calibro": str(r["Calibro"]).strip()})
+            st.session_state["scarico_permit"]["articoli"] = new_items
+            st.rerun()
+
+    # ── dettaglio discrepanze (riferimento) ───────────────────────────────
     if rep["only_invoice"]:
         st.markdown("**Sulla fattura ma NON sul permesso** (non esportabili così):")
         st.dataframe(pd.DataFrame([
@@ -689,9 +758,6 @@ def _render_export_check(invoice_items):
              "Fattura/Magazzino": m["fattura"], "Permesso": m["permesso"],
              "Nota": m.get("nota", "")}
             for m in rep["mismatches"]]), use_container_width=True, hide_index=True)
-    if rep["matched"]:
-        st.caption(f"{rep['matched']} armi confrontate. "
-                   "Le righe sopra sono le sole con problemi.")
 
 
 def _render_scarico_fixes():
