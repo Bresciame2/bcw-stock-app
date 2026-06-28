@@ -147,13 +147,25 @@ class S3Backend(Backend):
 
     def __init__(self, bucket, prefix="", endpoint=None, region=None):
         import boto3
+        if not bucket:
+            raise ValueError(
+                "BCW_S3_BUCKET non configurato. Imposta il nome del bucket nei "
+                "secret dell'app.")
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         kwargs = {}
         if endpoint:
             kwargs["endpoint_url"] = endpoint
-        if region:
-            kwargs["region_name"] = region
+        # Cloudflare R2 wants region 'auto'; default to it when an endpoint is set.
+        kwargs["region_name"] = region or ("auto" if endpoint else None)
+        # Pass credentials explicitly so they come from st.secrets reliably,
+        # not only from the boto3 environment-variable chain.
+        ak = _cfg("AWS_ACCESS_KEY_ID")
+        sk = _cfg("AWS_SECRET_ACCESS_KEY")
+        if ak and sk:
+            kwargs["aws_access_key_id"] = ak
+            kwargs["aws_secret_access_key"] = sk
+        kwargs = {k: v for k, v in kwargs.items() if v is not None}
         self.s3 = boto3.client("s3", **kwargs)
 
     def _k(self, key):

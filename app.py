@@ -899,6 +899,35 @@ def section_licenses():
                 arch.delete(e["id"]); st.rerun()
 
 
+def _storage_error_message(e):
+    """Turn a raw storage/botocore exception into an actionable Italian message.
+    Streamlit redacts uncaught errors, so we read the code ourselves and show it."""
+    try:
+        from botocore.exceptions import ClientError, EndpointConnectionError, \
+            NoCredentialsError
+    except Exception:
+        ClientError = EndpointConnectionError = NoCredentialsError = ()
+    if NoCredentialsError and isinstance(e, NoCredentialsError):
+        return ("Credenziali storage mancanti. Controlla AWS_ACCESS_KEY_ID e "
+                "AWS_SECRET_ACCESS_KEY nei secret dell'app.")
+    if EndpointConnectionError and isinstance(e, EndpointConnectionError):
+        return ("Impossibile raggiungere lo storage. Controlla BCW_S3_ENDPOINT "
+                f"(endpoint R2/S3). Dettaglio: {e}")
+    if ClientError and isinstance(e, ClientError):
+        err = (getattr(e, "response", {}) or {}).get("Error", {})
+        code = err.get("Code", "?")
+        msg = err.get("Message", "")
+        hints = {
+            "InvalidAccessKeyId": "La access key non è valida — ricontrolla AWS_ACCESS_KEY_ID.",
+            "SignatureDoesNotMatch": "La secret key non corrisponde — ricontrolla AWS_SECRET_ACCESS_KEY.",
+            "AccessDenied": "Accesso negato — il token R2 non ha permessi di scrittura sul bucket.",
+            "NoSuchBucket": "Il bucket non esiste — controlla BCW_S3_BUCKET.",
+        }
+        hint = hints.get(code, "")
+        return (f"Errore storage [{code}]: {msg} {hint}").strip()
+    return f"Errore storage: {e}"
+
+
 def section_settings(backend):
     st.subheader("⚙️ Impostazioni")
     st.write(f"**Backend storage:** `{backend.name}`")
@@ -909,8 +938,12 @@ def section_settings(backend):
         st.warning("Il workbook non è ancora presente nello storage condiviso.")
         seed = st.file_uploader("Carica il MAGAZZINO iniziale per inizializzare", type=["xlsx"])
         if seed and st.button("Inizializza storage"):
-            backend.write_bytes(storage.workbook_name(), seed.read())
-            st.success("Workbook caricato nello storage condiviso."); st.rerun()
+            try:
+                backend.write_bytes(storage.workbook_name(), seed.read())
+            except Exception as e:
+                st.error(_storage_error_message(e))
+            else:
+                st.success("Workbook caricato nello storage condiviso."); st.rerun()
     else:
         st.success("Workbook presente nello storage condiviso.")
         if st.button("Verifica struttura workbook"):
