@@ -8,12 +8,13 @@ storage. Capabilities:
   • Search the stock
   • One-click print-ready REGISTRO export (Excel + PDF)
   • Export/Import licence + EUC archive
-
 Persistence: see storage.py. Set BCW_STORAGE (local | s3 | dropbox) and the
 related secrets. On Streamlit Cloud you MUST use s3 or dropbox — local disk is
 wiped on restart.
-"""
 
+Bilingual UI: a sidebar switch toggles the whole interface between English
+(default) and Italian. All user-facing strings go through T("it", "en").
+"""
 import io
 import os
 import json
@@ -36,6 +37,23 @@ from doc_archive import DocArchive, DOC_TYPE_LABELS
 st.set_page_config(page_title="BCW Magazzino", page_icon="🔫", layout="wide")
 
 
+# ── i18n ──────────────────────────────────────────────────────────────────────
+# Default the interface to English. The sidebar switch (built in main()) writes
+# st.session_state["lang"] = "en" | "it". T() is defined before the password gate
+# so every screen — including the login page — renders in the chosen language.
+if "lang" not in st.session_state:
+    st.session_state["lang"] = "en"
+
+
+def T(it, en=None):
+    """Return the English string when the UI language is English, else Italian.
+    Usage: T("Salva", "Save"). With one argument, returns it unchanged (useful
+    for strings that are identical in both languages or are pure data)."""
+    if en is None:
+        return it
+    return en if st.session_state.get("lang", "en") == "en" else it
+
+
 # ── access gate ───────────────────────────────────────────────────────────────
 # The app is deployed as a "public" Streamlit app (the one private slot is taken),
 # so a password gate keeps it restricted to colleagues. Set APP_PASSWORD in the
@@ -46,30 +64,29 @@ def _check_password():
         expected = st.secrets["APP_PASSWORD"]
     except Exception:
         expected = os.environ.get("APP_PASSWORD")
-
     if not expected:
-        st.error("APP_PASSWORD non configurata. Aggiungila nei secrets dell'app "
-                 "(Streamlit Cloud → Settings → Secrets) per abilitare l'accesso.")
+        st.error(T("APP_PASSWORD non configurata. Aggiungila nei secrets dell'app "
+                   "(Streamlit Cloud → Settings → Secrets) per abilitare l'accesso.",
+                   "APP_PASSWORD is not configured. Add it to the app secrets "
+                   "(Streamlit Cloud → Settings → Secrets) to enable access."))
         st.stop()
-
     if st.session_state.get("_authed"):
         return
-
     st.markdown("## 🔒 BCW Magazzino")
-    st.caption("Inserisci la password per accedere.")
-    pw = st.text_input("Password", type="password", key="_pw_input")
-    if st.button("Entra"):
+    st.caption(T("Inserisci la password per accedere.",
+                 "Enter the password to sign in."))
+    pw = st.text_input(T("Password", "Password"), type="password", key="_pw_input")
+    if st.button(T("Entra", "Enter")):
         if pw == expected:
             st.session_state["_authed"] = True
             st.rerun()
         else:
-            st.error("Password errata.")
+            st.error(T("Password errata.", "Wrong password."))
     if not st.session_state.get("_authed"):
         st.stop()
 
 
 _check_password()
-
 
 # Live typology list, read from the workbook's INVENTARIO dropdown source so the
 # Carico selectbox always mirrors the real menu (falls back to the constant).
@@ -80,7 +97,6 @@ except Exception:
 
 
 # ── config / helpers ──────────────────────────────────────────────────────────
-
 def get_api_key():
     try:
         return st.secrets["ANTHROPIC_API_KEY"]
@@ -101,12 +117,11 @@ def backend_ready(backend):
     try:
         return backend.exists(storage.workbook_name())
     except Exception as e:
-        st.error(f"Errore accesso storage: {e}")
+        st.error(T(f"Errore accesso storage: {e}", f"Storage access error: {e}"))
         return False
 
 
 # ── Claude extraction (lifted from the reference app) ─────────────────────────
-
 def pdf_to_images_b64(pdf_bytes):
     try:
         import fitz
@@ -122,7 +137,9 @@ def pdf_to_images_b64(pdf_bytes):
             images.append(base64.standard_b64encode(buf.getvalue()).decode("utf-8"))
         return images, "image/jpeg"
     except ImportError:
-        st.error("PyMuPDF o Pillow non installato."); return [], "image/jpeg"
+        st.error(T("PyMuPDF o Pillow non installato.",
+                   "PyMuPDF or Pillow is not installed."))
+        return [], "image/jpeg"
 
 
 def extract_with_claude(doc_bytes, mime_type, operation_type, api_key):
@@ -168,7 +185,8 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
     if mime_type == "application/pdf":
         images_b64, pdf_mime = pdf_to_images_b64(doc_bytes)
         if not images_b64:
-            return None, "Impossibile convertire il PDF."
+            return None, T("Impossibile convertire il PDF.",
+                           "Could not convert the PDF.")
         content = [{"type": "image", "source": {"type": "base64", "media_type": pdf_mime, "data": b}}
                    for b in images_b64[:10]]
         content.append({"type": "text", "text": fields_prompt})
@@ -179,7 +197,6 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
     else:
         text = doc_bytes.decode("utf-8", errors="replace")
         content = [{"type": "text", "text": f"Documento:\n{text}\n\n{fields_prompt}"}]
-
     last_exc = None
     response = None
     for attempt in range(3):
@@ -193,20 +210,25 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
                 response = stream.get_final_message()
             break
         except anthropic.AuthenticationError:
-            return None, ("Chiave API Anthropic non valida o scaduta. Aggiorna "
-                          "ANTHROPIC_API_KEY nei secrets dell'app (o inseriscine una "
-                          "valida nella barra laterale). Puoi comunque inserire i dati "
-                          "manualmente qui sotto.")
+            return None, T("Chiave API Anthropic non valida o scaduta. Aggiorna "
+                           "ANTHROPIC_API_KEY nei secrets dell'app (o inseriscine una "
+                           "valida nella barra laterale). Puoi comunque inserire i dati "
+                           "manualmente qui sotto.",
+                           "Invalid or expired Anthropic API key. Update "
+                           "ANTHROPIC_API_KEY in the app secrets (or enter a valid one "
+                           "in the sidebar). You can still enter the data manually below.")
         except anthropic.APIStatusError as e:
             if e.status_code == 529:
                 last_exc = e; time.sleep(10 * (attempt + 1))
             else:
-                return None, f"Errore API Claude ({e.status_code}): {e}"
+                return None, T(f"Errore API Claude ({e.status_code}): {e}",
+                               f"Claude API error ({e.status_code}): {e}")
         except anthropic.APIConnectionError as e:
-            return None, f"Connessione a Claude non riuscita: {e}"
+            return None, T(f"Connessione a Claude non riuscita: {e}",
+                           f"Could not connect to Claude: {e}")
     else:
-        return None, f"Claude API sovraccarica: {last_exc}"
-
+        return None, T(f"Claude API sovraccarica: {last_exc}",
+                       f"Claude API overloaded: {last_exc}")
     raw = response.content[0].text.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]
@@ -234,15 +256,16 @@ Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
                         pass
                     start = None
         if recovered:
-            return recovered, f"⚠️ Risposta troncata: recuperati {len(recovered)} articoli."
-        return None, f"Parsing JSON fallito. Risposta: {raw[:300]}"
+            return recovered, T(f"⚠️ Risposta troncata: recuperati {len(recovered)} articoli.",
+                                f"⚠️ Truncated response: recovered {len(recovered)} items.")
+        return None, T(f"Parsing JSON fallito. Risposta: {raw[:300]}",
+                       f"JSON parsing failed. Response: {raw[:300]}")
     if isinstance(parsed, dict):
         parsed = [parsed]
     return parsed, None
 
 
 # ── shared-storage operation wrappers ─────────────────────────────────────────
-
 def with_workbook(fn, read_only=False):
     """Run fn(local_path) inside a locked workbook session."""
     backend = get_backend()
@@ -252,12 +275,7 @@ def with_workbook(fn, read_only=False):
 
 
 def flash(message, level="success"):
-    """Show a confirmation that stays visible regardless of the active tab.
-
-    A st.toast floats over the page on the current rerun; the message is also
-    stashed in session_state so it survives the rerun (st.tabs may switch the
-    visible tab on submit) and is re-rendered at the top of the page by
-    render_flash()."""
+    """Show a confirmation that stays visible regardless of the active tab."""
     icon = {"success": "✅", "error": "❌", "warning": "⚠️"}.get(level, "ℹ️")
     try:
         st.toast(message, icon=icon)
@@ -277,96 +295,109 @@ def render_flash():
 
 
 # ── UI sections ───────────────────────────────────────────────────────────────
-
 def section_dashboard():
-    st.subheader("📊 Stato magazzino")
+    st.subheader(T("📊 Stato magazzino", "📊 Stock status"))
     try:
         s = with_workbook(lambda _p: stock_agent.stato(), read_only=True)
         pp = with_workbook(lambda _p: stock_agent.stato_per_prodotto(), read_only=True)
     except Exception as e:
-        st.error(f"Impossibile leggere il magazzino: {e}"); return
-
+        st.error(T(f"Impossibile leggere il magazzino: {e}",
+                   f"Could not read the stock: {e}")); return
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Totale articoli", s["totale_articoli"])
-    c2.metric("In giacenza", s["in_giacenza"])
-    c3.metric("Venduti", s["venduti"])
-    c4.metric("Max N. operazione", s["max_n_operazione"])
-
+    c1.metric(T("Totale articoli", "Total items"), s["totale_articoli"])
+    c2.metric(T("In giacenza", "In stock"), s["in_giacenza"])
+    c3.metric(T("Venduti", "Sold"), s["venduti"])
+    c4.metric(T("Max N. operazione", "Max operation no."), s["max_n_operazione"])
     tot = pp["totale"]
     v1, v2, v3 = st.columns(3)
-    v1.metric("Valore costo in giacenza", f"€ {tot['cost_in_stock']:,.2f}")
-    v2.metric("Valore vendite (venduti)", f"€ {tot['sale_value_sold']:,.2f}")
-    v3.metric("Margine sui venduti", f"€ {tot['margin_sold']:,.2f}")
-
-    st.markdown("##### Per tipologia di prodotto")
+    v1.metric(T("Valore costo in giacenza", "Cost value in stock"),
+              f"€ {tot['cost_in_stock']:,.2f}")
+    v2.metric(T("Valore vendite (venduti)", "Sales value (sold)"),
+              f"€ {tot['sale_value_sold']:,.2f}")
+    v3.metric(T("Margine sui venduti", "Margin on sold"),
+              f"€ {tot['margin_sold']:,.2f}")
+    st.markdown(T("##### Per tipologia di prodotto", "##### By product type"))
     rows = pp["per_prodotto"]
     if not rows:
-        st.info("Nessun dato."); return
+        st.info(T("Nessun dato.", "No data.")); return
+    col_tip = T("Tipologia", "Type")
+    col_instock = T("In giacenza", "In stock")
+    col_cost_stock = T("Costo giacenza €", "Stock cost €")
     df = pd.DataFrame(rows)[
         ["tipologia", "in_stock", "sold", "cost_in_stock", "cost_sold",
          "sale_value_sold", "margin_sold"]
     ].rename(columns={
-        "tipologia": "Tipologia", "in_stock": "In giacenza", "sold": "Venduti",
-        "cost_in_stock": "Costo giacenza €", "cost_sold": "Costo venduti €",
-        "sale_value_sold": "Ricavo venduti €", "margin_sold": "Margine €"})
+        "tipologia": col_tip, "in_stock": col_instock, "sold": T("Venduti", "Sold"),
+        "cost_in_stock": col_cost_stock, "cost_sold": T("Costo venduti €", "Sold cost €"),
+        "sale_value_sold": T("Ricavo venduti €", "Sold revenue €"),
+        "margin_sold": T("Margine €", "Margin €")})
     st.dataframe(df, use_container_width=True, hide_index=True)
-    chart = df[df["In giacenza"] > 0].set_index("Tipologia")["Costo giacenza €"]
+    chart = df[df[col_instock] > 0].set_index(col_tip)[col_cost_stock]
     if not chart.empty:
         st.bar_chart(chart)
 
 
 def section_search():
-    st.subheader("🔎 Cerca articolo")
-
+    st.subheader(T("🔎 Cerca articolo", "🔎 Search item"))
     # --- free-text search: marca / modello / matricola / calibro / tipologia ---
-    st.markdown("**Ricerca per marca, modello, matricola, calibro…**")
-    term = st.text_input("Cerca", key="search_term",
-                         placeholder="es. Beretta, 686, 12, FUCILE…")
-    if st.button("Cerca", type="primary", key="search_go") and term.strip():
+    st.markdown(T("**Ricerca per marca, modello, matricola, calibro…**",
+                  "**Search by brand, model, serial, caliber…**"))
+    term = st.text_input(T("Cerca", "Search"), key="search_term",
+                         placeholder=T("es. Beretta, 686, 12, FUCILE…",
+                                       "e.g. Beretta, 686, 12, SHOTGUN…"))
+    if st.button(T("Cerca", "Search"), type="primary", key="search_go") and term.strip():
         res = with_workbook(lambda _p: stock_agent.search_items(term), read_only=True)
         results = res.get("results", [])
         if not results:
-            st.warning("Nessun articolo corrispondente.")
+            st.warning(T("Nessun articolo corrispondente.", "No matching items."))
         else:
-            st.success(f"{res['count']} articoli trovati"
-                       + (" (mostrati i primi 300)" if res["count"] >= 300 else "") + ".")
+            st.success(T(f"{res['count']} articoli trovati", f"{res['count']} items found")
+                       + (T(" (mostrati i primi 300)", " (showing first 300)")
+                          if res["count"] >= 300 else "") + ".")
             df = pd.DataFrame([{
-                "Stato": r["stato"], "Tipologia": r["tipologia"], "Marca": r["marca"],
-                "Modello": r["modello"], "Calibro": r["calibro"],
-                "Matr. arma": r["matr_arma"], "Matr. canna": r["matr_canna"],
-                "N.op": r["n_operazione"], "Data carico": r["data_carico"],
-                "Fornitore": r["fornitore"], "Riga": r["row"],
+                T("Stato", "Status"): r["stato"], T("Tipologia", "Type"): r["tipologia"],
+                T("Marca", "Brand"): r["marca"], T("Modello", "Model"): r["modello"],
+                T("Calibro", "Caliber"): r["calibro"],
+                T("Matr. arma", "Weapon s/n"): r["matr_arma"],
+                T("Matr. canna", "Barrel s/n"): r["matr_canna"],
+                T("N.op", "Op. no."): r["n_operazione"],
+                T("Data carico", "Load date"): r["data_carico"],
+                T("Fornitore", "Supplier"): r["fornitore"], T("Riga", "Row"): r["row"],
             } for r in results])
             st.dataframe(df, hide_index=True, use_container_width=True)
-
     # --- exact lookup by matricola / n. operazione (returns the full record) ---
-    with st.expander("Ricerca esatta per matricola / n. operazione"):
+    with st.expander(T("Ricerca esatta per matricola / n. operazione",
+                       "Exact lookup by serial / operation no.")):
         col1, col2 = st.columns(2)
-        matr = col1.text_input("Matricola arma", key="exact_matr")
-        n_op = col2.text_input("N. operazione", key="exact_nop")
-        if st.button("Cerca esatto", key="exact_go"):
+        matr = col1.text_input(T("Matricola arma", "Weapon serial"), key="exact_matr")
+        n_op = col2.text_input(T("N. operazione", "Operation no."), key="exact_nop")
+        if st.button(T("Cerca esatto", "Exact search"), key="exact_go"):
             q = {}
             if matr.strip():
                 q["matr_arma"] = matr.strip()
             if n_op.strip():
                 q["n_operazione"] = n_op.strip()
             if not q:
-                st.warning("Inserisci una matricola o un n. operazione.")
+                st.warning(T("Inserisci una matricola o un n. operazione.",
+                             "Enter a serial or an operation no."))
             else:
                 res = with_workbook(lambda _p: stock_agent.cerca_item(q), read_only=True)
                 if res.get("status") == "found":
-                    st.success(f"Trovato alla riga {res['row']}.")
+                    st.success(T(f"Trovato alla riga {res['row']}.",
+                                 f"Found at row {res['row']}."))
                     st.json({k: v for k, v in res.items() if k not in ("status",)})
                 else:
-                    st.warning("Articolo non trovato.")
-
+                    st.warning(T("Articolo non trovato.", "Item not found."))
     # --- cancel / delete (mistake correction) ---
-    with st.expander("🗑️ Annulla scarico / Elimina carico (correzione errori)"):
-        st.caption("Usa questi strumenti solo per correggere un errore di "
-                   "inserimento. Le operazioni modificano il registro legale.")
+    with st.expander(T("🗑️ Annulla scarico / Elimina carico (correzione errori)",
+                       "🗑️ Reverse sale / Delete load (error correction)")):
+        st.caption(T("Usa questi strumenti solo per correggere un errore di "
+                     "inserimento. Le operazioni modificano il registro legale.",
+                     "Use these tools only to correct a data-entry mistake. "
+                     "These operations modify the legal register."))
         d1, d2 = st.columns(2)
-        del_matr = d1.text_input("Matricola arma", key="del_matr")
-        del_nop = d2.text_input("N. operazione", key="del_nop")
+        del_matr = d1.text_input(T("Matricola arma", "Weapon serial"), key="del_matr")
+        del_nop = d2.text_input(T("N. operazione", "Operation no."), key="del_nop")
 
         def _del_query():
             q = {}
@@ -376,25 +407,30 @@ def section_search():
                 q["n_operazione"] = del_nop.strip()
             return q
 
-        st.markdown("**↩️ Annulla uno scarico** — rimette l'articolo in giacenza.")
-        if st.button("↩️ Annulla scarico", key="rev_scarico_go"):
+        st.markdown(T("**↩️ Annulla uno scarico** — rimette l'articolo in giacenza.",
+                      "**↩️ Reverse a sale** — puts the item back in stock."))
+        if st.button(T("↩️ Annulla scarico", "↩️ Reverse sale"), key="rev_scarico_go"):
             q = _del_query()
             if not q:
-                st.warning("Inserisci una matricola o un n. operazione.")
+                st.warning(T("Inserisci una matricola o un n. operazione.",
+                             "Enter a serial or an operation no."))
             else:
                 r = with_workbook(lambda _p: stock_agent.reverse_scarico(q))
                 if r.get("status") == "success":
                     st.success(r["message"])
                 else:
-                    st.error(r.get("message", "Operazione non riuscita."))
-
+                    st.error(r.get("message", T("Operazione non riuscita.",
+                                                "Operation failed.")))
         st.divider()
-        st.markdown("**🗑️ Elimina un carico** — cancella l'articolo dal "
-                    "magazzino (solo se non ancora venduto).")
-        if st.button("🗑️ Elimina carico", key="del_carico_go"):
+        st.markdown(T("**🗑️ Elimina un carico** — cancella l'articolo dal "
+                      "magazzino (solo se non ancora venduto).",
+                      "**🗑️ Delete a load** — removes the item from the "
+                      "stock (only if not yet sold)."))
+        if st.button(T("🗑️ Elimina carico", "🗑️ Delete load"), key="del_carico_go"):
             q = _del_query()
             if not q:
-                st.warning("Inserisci una matricola o un n. operazione.")
+                st.warning(T("Inserisci una matricola o un n. operazione.",
+                             "Enter a serial or an operation no."))
             else:
                 r = with_workbook(lambda _p: stock_agent.delete_carico(q))
                 if r.get("status") == "confirm":
@@ -404,13 +440,16 @@ def section_search():
                     st.session_state.pop("del_confirm", None)
                     st.success(r["message"])
                 else:
-                    st.error(r.get("message", "Operazione non riuscita."))
-
+                    st.error(r.get("message", T("Operazione non riuscita.",
+                                                "Operation failed.")))
         if st.session_state.get("del_confirm"):
-            st.error("⚠️ Questa eliminazione lascerà un buco nella sequenza "
-                     "del registro legale.")
+            st.error(T("⚠️ Questa eliminazione lascerà un buco nella sequenza "
+                       "del registro legale.",
+                       "⚠️ This deletion will leave a gap in the legal "
+                       "register sequence."))
             cc1, cc2 = st.columns(2)
-            if cc1.button("✅ Conferma eliminazione", key="del_confirm_yes"):
+            if cc1.button(T("✅ Conferma eliminazione", "✅ Confirm deletion"),
+                          key="del_confirm_yes"):
                 q = st.session_state["del_confirm"]
                 r = with_workbook(
                     lambda _p: stock_agent.delete_carico(q, allow_registro_gap=True))
@@ -418,21 +457,24 @@ def section_search():
                 if r.get("status") == "success":
                     st.success(r["message"])
                 else:
-                    st.error(r.get("message", "Operazione non riuscita."))
-            if cc2.button("❌ Annulla", key="del_confirm_no"):
+                    st.error(r.get("message", T("Operazione non riuscita.",
+                                                "Operation failed.")))
+            if cc2.button(T("❌ Annulla", "❌ Cancel"), key="del_confirm_no"):
                 st.session_state.pop("del_confirm", None)
-                st.info("Eliminazione annullata.")
+                st.info(T("Eliminazione annullata.", "Deletion cancelled."))
 
 
 def _extract_block(op_key, api_key):
-    docs = st.file_uploader("DDT / fatture / foto (PDF, JPG, PNG) — multipli",
+    docs = st.file_uploader(T("DDT / fatture / foto (PDF, JPG, PNG) — multipli",
+                              "DDTs / invoices / photos (PDF, JPG, PNG) — multiple"),
                             type=["pdf", "jpg", "jpeg", "png", "webp"],
                             accept_multiple_files=True, key=f"docs_{op_key}")
-    if docs and st.button("📄 Estrai dati con AI", key=f"ext_{op_key}", type="primary"):
+    if docs and st.button(T("📄 Estrai dati con AI", "📄 Extract data with AI"),
+                          key=f"ext_{op_key}", type="primary"):
         all_items, errors = [], []
-        bar = st.progress(0.0, text="Elaborazione…")
+        bar = st.progress(0.0, text=T("Elaborazione…", "Processing…"))
         for i, f in enumerate(docs):
-            bar.progress(i / len(docs), text=f"Elaboro {f.name}…")
+            bar.progress(i / len(docs), text=T(f"Elaboro {f.name}…", f"Processing {f.name}…"))
             items, err = extract_with_claude(f.read(), f.type or "application/octet-stream",
                                              op_key, api_key)
             if err:
@@ -444,16 +486,18 @@ def _extract_block(op_key, api_key):
             st.warning(e)
         if all_items:
             st.session_state[f"items_{op_key}"] = all_items
-            st.success(f"{len(all_items)} articoli estratti.")
+            st.success(T(f"{len(all_items)} articoli estratti.",
+                         f"{len(all_items)} items extracted."))
     return st.session_state.get(f"items_{op_key}")
 
 
 def section_carico(api_key):
-    st.subheader("➕ Carico (acquisto)")
+    st.subheader(T("➕ Carico (acquisto)", "➕ Load (purchase)"))
     cbulk = _bulk_excel("carico", key="carico")
     if cbulk:
         st.session_state["items_CARICO"] = cbulk
-        st.success(f"{len(cbulk)} righe importate dall'Excel.")
+        st.success(T(f"{len(cbulk)} righe importate dall'Excel.",
+                     f"{len(cbulk)} rows imported from Excel."))
         st.rerun()
     items = _extract_block("CARICO", api_key) or [{}]
     rows = []
@@ -469,17 +513,22 @@ def section_carico(api_key):
             "costo": float(it.get("costo") or 0), "costo_imballo": float(it.get("costo_imballo") or 0),
             "data_ddt": it.get("data_ddt") or "", "data_fattura": it.get("data_fattura") or "",
         })
-    st.caption("⚠️ Conferma la DATA DI CARICO (arrivo a Gardone) — spesso diversa dalla data del DDT.")
+    st.caption(T("⚠️ Conferma la DATA DI CARICO (arrivo a Gardone) — spesso diversa dalla data del DDT.",
+                 "⚠️ Confirm the LOAD DATE (arrival at Gardone) — often different from the DDT date."))
     with st.form("carico_form"):
         edited = st.data_editor(
             pd.DataFrame(rows), num_rows="dynamic", use_container_width=True,
             column_config={
-                "n_operazione": st.column_config.NumberColumn("N. Op. (0=no registro)", step=1),
-                "tipologia": st.column_config.SelectboxColumn("Tipologia *", options=TIPOLOGIE),
-                "costo": st.column_config.NumberColumn("Costo €", format="%.2f"),
-                "costo_imballo": st.column_config.NumberColumn("Imballo €", format="%.2f"),
+                "n_operazione": st.column_config.NumberColumn(
+                    T("N. Op. (0=no registro)", "Op. no. (0=no register)"), step=1),
+                "tipologia": st.column_config.SelectboxColumn(
+                    T("Tipologia *", "Type *"), options=TIPOLOGIE),
+                "costo": st.column_config.NumberColumn(T("Costo €", "Cost €"), format="%.2f"),
+                "costo_imballo": st.column_config.NumberColumn(
+                    T("Imballo €", "Packaging €"), format="%.2f"),
             })
-        submit = st.form_submit_button("✅ Aggiungi al MAGAZZINO", type="primary")
+        submit = st.form_submit_button(
+            T("✅ Aggiungi al MAGAZZINO", "✅ Add to STOCK"), type="primary")
     if submit:
         def _do(_p):
             ok, errs = [], []
@@ -496,20 +545,24 @@ def section_carico(api_key):
         try:
             ok, errs = with_workbook(_do)
         except Exception as e:
-            flash(f"Errore durante il salvataggio del carico: {e}", "error")
+            flash(T(f"Errore durante il salvataggio del carico: {e}",
+                    f"Error while saving the load: {e}"), "error")
             st.rerun()
         if ok:
             st.session_state.pop("items_CARICO", None)
             if errs:
-                flash(f"{len(ok)} carichi salvati; {len(errs)} non riusciti: "
+                flash(T(f"{len(ok)} carichi salvati; {len(errs)} non riusciti: ",
+                        f"{len(ok)} loads saved; {len(errs)} failed: ")
                       + " | ".join(e["message"] for e in errs), "warning")
             else:
-                flash(f"{len(ok)} carichi salvati nel registro condiviso.")
+                flash(T(f"{len(ok)} carichi salvati nel registro condiviso.",
+                        f"{len(ok)} loads saved to the shared register."))
         elif errs:
-            flash("Carico non riuscito: "
+            flash(T("Carico non riuscito: ", "Load failed: ")
                   + " | ".join(e["message"] for e in errs), "error")
         else:
-            flash("Nessun carico salvato — controlla i dati inseriti.", "warning")
+            flash(T("Nessun carico salvato — controlla i dati inseriti.",
+                    "No load saved — check the entered data."), "warning")
         st.rerun()
 
 
@@ -517,31 +570,39 @@ def _extract_permit_block(api_key, invoice_no=""):
     """Upload the export permit, AI-extract the ATA number + metadata, archive
     the file in the licence section, and return the ATA number to pre-fill the
     scarico rows. The extracted permit is kept in session_state['scarico_permit']."""
-    with st.expander("📑 Permesso di esportazione (estrae il N. ATA e archivia la licenza)",
+    with st.expander(T("📑 Permesso di esportazione (estrae il N. ATA e archivia la licenza)",
+                       "📑 Export permit (extracts the ATA no. and archives the licence)"),
                      expanded=False):
         permit = st.session_state.get("scarico_permit")
         if permit:
-            st.success(f"Permesso applicato — N. ATA **{permit.get('numero','—')}** "
-                       f"· {permit.get('tipo','—')} · {permit.get('paese_destinazione','—')} "
-                       f"· archiviato in 📁 Licenze.")
-            if st.button("🗑️ Rimuovi permesso", key="permit_clear"):
+            st.success(T(f"Permesso applicato — N. ATA **{permit.get('numero','—')}** "
+                         f"· {permit.get('tipo','—')} · {permit.get('paese_destinazione','—')} "
+                         f"· archiviato in 📁 Licenze.",
+                         f"Permit applied — ATA no. **{permit.get('numero','—')}** "
+                         f"· {permit.get('tipo','—')} · {permit.get('paese_destinazione','—')} "
+                         f"· archived in 📁 Licences."))
+            if st.button(T("🗑️ Rimuovi permesso", "🗑️ Remove permit"), key="permit_clear"):
                 st.session_state.pop("scarico_permit", None)
                 st.session_state.pop("scarico_ata", None)
                 st.rerun()
             return permit.get("numero", "")
-        up = st.file_uploader("Permesso / licenza export (PDF, JPG, PNG)",
+        up = st.file_uploader(T("Permesso / licenza export (PDF, JPG, PNG)",
+                                "Export permit / licence (PDF, JPG, PNG)"),
                               type=["pdf", "jpg", "jpeg", "png", "webp"],
                               key="permit_up")
-        if up and st.button("📑 Estrai N. ATA e archivia", key="permit_go", type="primary"):
+        if up and st.button(T("📑 Estrai N. ATA e archivia", "📑 Extract ATA no. and archive"),
+                            key="permit_go", type="primary"):
             if not api_key:
-                flash("Serve la API key (barra laterale) per leggere il permesso.", "error")
+                flash(T("Serve la API key (barra laterale) per leggere il permesso.",
+                        "An API key (sidebar) is required to read the permit."), "error")
                 st.rerun()
             raw = up.read()
-            with st.spinner("Lettura permesso…"):
+            with st.spinner(T("Lettura permesso…", "Reading permit…")):
                 got, err = extract_with_claude(raw, up.type or "application/pdf",
                                                "PERMIT", api_key)
             if err and not got:
-                flash(f"Estrazione permesso non riuscita: {err}", "error")
+                flash(T(f"Estrazione permesso non riuscita: {err}",
+                        f"Permit extraction failed: {err}"), "error")
                 st.rerun()
             p = (got[0] if got else {}) or {}
             # archive the file in the licence section
@@ -561,21 +622,24 @@ def _extract_permit_block(api_key, invoice_no=""):
                         if a.get("matricola"))) if p.get("articoli") else "",
                 })
             except Exception as e:
-                flash(f"N. ATA estratto ma archiviazione licenza non riuscita: {e}",
+                flash(T(f"N. ATA estratto ma archiviazione licenza non riuscita: {e}",
+                        f"ATA no. extracted but licence archiving failed: {e}"),
                       "warning")
             st.session_state["scarico_permit"] = p
             st.session_state["scarico_ata"] = p.get("numero", "")
-            flash(f"N. ATA {p.get('numero','(non letto)')} applicato e licenza archiviata.")
+            flash(T(f"N. ATA {p.get('numero','(non letto)')} applicato e licenza archiviata.",
+                    f"ATA no. {p.get('numero','(not read)')} applied and licence archived."))
             st.rerun()
     return st.session_state.get("scarico_ata", "")
 
 
 def section_scarico(api_key):
-    st.subheader("➖ Scarico (vendita)")
+    st.subheader(T("➖ Scarico (vendita)", "➖ Unload (sale)"))
     sbulk = _bulk_excel("scarico", key="scarico")
     if sbulk:
         st.session_state["items_SCARICO"] = sbulk
-        st.success(f"{len(sbulk)} righe importate dall'Excel.")
+        st.success(T(f"{len(sbulk)} righe importate dall'Excel.",
+                     f"{len(sbulk)} rows imported from Excel."))
         st.rerun()
     items = _extract_block("SCARICO", api_key) or [{}]
     invoice_no = next((it.get("n_fattura") for it in items if it.get("n_fattura")), "")
@@ -592,8 +656,10 @@ def section_scarico(api_key):
     with st.form("scarico_form"):
         edited = st.data_editor(
             pd.DataFrame(rows), num_rows="dynamic", use_container_width=True,
-            column_config={"prezzo_vendita": st.column_config.NumberColumn("Prezzo €", format="%.2f")})
-        submit = st.form_submit_button("✅ Registra scarico", type="primary")
+            column_config={"prezzo_vendita": st.column_config.NumberColumn(
+                T("Prezzo €", "Price €"), format="%.2f")})
+        submit = st.form_submit_button(
+            T("✅ Registra scarico", "✅ Register sale"), type="primary")
     if submit:
         def _do(_p):
             ok, errs, fixes = [], [], []
@@ -614,7 +680,8 @@ def section_scarico(api_key):
         try:
             ok, errs, fixes = with_workbook(_do)
         except Exception as e:
-            flash(f"Errore durante il salvataggio dello scarico: {e}", "error")
+            flash(T(f"Errore durante il salvataggio dello scarico: {e}",
+                    f"Error while saving the sale: {e}"), "error")
             st.rerun()
         st.session_state["scarico_fixes"] = fixes
         if ok:
@@ -624,15 +691,18 @@ def section_scarico(api_key):
                 st.session_state.pop("scarico_permit", None)
                 st.session_state.pop("scarico_ata", None)
             if errs:
-                flash(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti.", "warning")
+                flash(T(f"{len(ok)} scarichi registrati; {len(errs)} non riusciti.",
+                        f"{len(ok)} sales registered; {len(errs)} failed."), "warning")
             else:
-                flash(f"{len(ok)} scarichi registrati nel registro condiviso.")
+                flash(T(f"{len(ok)} scarichi registrati nel registro condiviso.",
+                        f"{len(ok)} sales registered in the shared register."))
         elif errs:
-            flash(f"{len(errs)} scarichi non riusciti — vedi sotto.", "error")
+            flash(T(f"{len(errs)} scarichi non riusciti — vedi sotto.",
+                    f"{len(errs)} sales failed — see below."), "error")
         else:
-            flash("Nessuno scarico registrato — controlla i dati inseriti.", "warning")
+            flash(T("Nessuno scarico registrato — controlla i dati inseriti.",
+                    "No sale registered — check the entered data."), "warning")
         st.rerun()
-
     _render_scarico_fixes()
 
 
@@ -645,15 +715,19 @@ def _render_export_check(invoice_items):
         return
     permit_items = permit.get("articoli") or []
     st.markdown("---")
-    st.markdown("#### 🛃 Controllo doganale — fattura vs permesso")
+    st.markdown(T("#### 🛃 Controllo doganale — fattura vs permesso",
+                  "#### 🛃 Customs check — invoice vs permit"))
     if not permit_items:
-        st.info("Il permesso non elenca le matricole, quindi non posso confrontare "
-                "marche/calibri/matricole. Verifica manualmente che corrispondano.")
+        st.info(T("Il permesso non elenca le matricole, quindi non posso confrontare "
+                  "marche/calibri/matricole. Verifica manualmente che corrispondano.",
+                  "The permit does not list serials, so brands/calibers/serials "
+                  "cannot be compared. Verify manually that they match."))
         return
     inv_with_serial = [it for it in invoice_items
                        if (it.get("matr_arma") or "").strip()]
     if not inv_with_serial:
-        st.info("Nessuna matricola sulla fattura da confrontare.")
+        st.info(T("Nessuna matricola sulla fattura da confrontare.",
+                  "No serials on the invoice to compare."))
         return
     try:
         rep = with_workbook(
@@ -661,30 +735,34 @@ def _render_export_check(invoice_items):
                 inv_with_serial, permit_items, stock_agent.load_wb()["MAGAZZINO"]),
             read_only=True)
     except Exception as e:
-        st.warning(f"Controllo non disponibile: {e}")
+        st.warning(T(f"Controllo non disponibile: {e}", f"Check unavailable: {e}"))
         return
-
     total = rep["matched"] + len(rep["only_invoice"]) + len(rep["only_permit"])
     problems = (len(rep["only_invoice"]) + len(rep["only_permit"])
                 + len(rep["mismatches"]))
-
     if rep["ok"]:
-        st.success(f"✅ Conciliato — tutte le {rep['matched']} armi coincidono "
-                   "(matricole, marche e calibri tra fattura e permesso). "
-                   "Pronto per l'export.")
+        st.success(T(f"✅ Conciliato — tutte le {rep['matched']} armi coincidono "
+                     "(matricole, marche e calibri tra fattura e permesso). "
+                     "Pronto per l'export.",
+                     f"✅ Reconciled — all {rep['matched']} weapons match "
+                     "(serials, brands and calibers between invoice and permit). "
+                     "Ready for export."))
         return
-
-    st.error(f"⚠️ {problems} discrepanze da risolvere prima dell'export "
-             f"· {rep['matched']} di {total} armi già conciliate.")
+    st.error(T(f"⚠️ {problems} discrepanze da risolvere prima dell'export "
+               f"· {rep['matched']} di {total} armi già conciliate.",
+               f"⚠️ {problems} discrepancies to resolve before export "
+               f"· {rep['matched']} of {total} weapons already reconciled."))
     st.progress(rep["matched"] / total if total else 0.0,
-                text=f"{rep['matched']}/{total} conciliate — {problems} da sistemare")
-
+                text=T(f"{rep['matched']}/{total} conciliate — {problems} da sistemare",
+                       f"{rep['matched']}/{total} reconciled — {problems} to fix"))
     # ── allineamento rapido (probabili errori di lettura OCR) ──────────────
     import difflib
     only_inv, only_per = rep["only_invoice"], rep["only_permit"]
     if only_inv and only_per:
-        st.markdown("**Allineamento rapido matricole** — correggo il permesso "
-                    "sulla matricola della fattura/magazzino:")
+        st.markdown(T("**Allineamento rapido matricole** — correggo il permesso "
+                      "sulla matricola della fattura/magazzino:",
+                      "**Quick serial alignment** — corrects the permit to the "
+                      "invoice/stock serial:"))
         inv_serials = [x["matr_arma"] for x in only_inv]
         for pi, pitem in enumerate(only_per):
             ps = pitem["matr_arma"]
@@ -698,11 +776,11 @@ def _render_export_check(invoice_items):
                 None, stock_agent._norm_serial(ps),
                 stock_agent._norm_serial(best)).ratio()
             c1, c2, c3 = st.columns([3, 3, 2])
-            c1.markdown(f"📜 permesso: **{ps}**")
-            c2.markdown(f"📄 fattura: **{best}** "
-                        f"<span style='color:gray'>({int(score*100)}%)</span>",
+            c1.markdown(T(f"📜 permesso: **{ps}**", f"📜 permit: **{ps}**"))
+            c2.markdown(T(f"📄 fattura: **{best}** ", f"📄 invoice: **{best}** ")
+                        + f"<span style='color:gray'>({int(score*100)}%)</span>",
                         unsafe_allow_html=True)
-            if score >= 0.55 and c3.button("Allinea", key=f"algn_{pi}",
+            if score >= 0.55 and c3.button(T("Allinea", "Align"), key=f"algn_{pi}",
                                            type="primary"):
                 for art in st.session_state["scarico_permit"]["articoli"]:
                     cur = str(art.get("matricola")
@@ -714,49 +792,57 @@ def _render_export_check(invoice_items):
                             art["matr_arma"] = best
                         break
                 st.rerun()
-
     # ── modifica manuale del permesso ─────────────────────────────────────
-    with st.expander("✏️ Modifica manuale del permesso (per far coincidere tutto)"):
+    with st.expander(T("✏️ Modifica manuale del permesso (per far coincidere tutto)",
+                       "✏️ Manually edit the permit (to make everything match)")):
         df = pd.DataFrame([
-            {"Matricola": a.get("matricola") or a.get("matr_arma") or "",
-             "Marca": a.get("marca") or a.get("brand") or "",
-             "Modello": a.get("modello") or a.get("model") or "",
-             "Calibro": a.get("calibro") or a.get("cal") or ""}
+            {T("Matricola", "Serial"): a.get("matricola") or a.get("matr_arma") or "",
+             T("Marca", "Brand"): a.get("marca") or a.get("brand") or "",
+             T("Modello", "Model"): a.get("modello") or a.get("model") or "",
+             T("Calibro", "Caliber"): a.get("calibro") or a.get("cal") or ""}
             for a in permit_items])
         edited = st.data_editor(df, use_container_width=True, hide_index=True,
                                 num_rows="dynamic", key="permit_editor")
-        if st.button("💾 Salva e ricontrolla", key="permit_save", type="primary"):
+        if st.button(T("💾 Salva e ricontrolla", "💾 Save and recheck"),
+                     key="permit_save", type="primary"):
             new_items = []
+            col_s = T("Matricola", "Serial")
+            col_b = T("Marca", "Brand")
+            col_m = T("Modello", "Model")
+            col_c = T("Calibro", "Caliber")
             for _, r in edited.iterrows():
-                m = str(r["Matricola"]).strip()
+                m = str(r[col_s]).strip()
                 if not m:
                     continue
                 new_items.append({"matricola": m,
-                                  "marca": str(r["Marca"]).strip(),
-                                  "modello": str(r["Modello"]).strip(),
-                                  "calibro": str(r["Calibro"]).strip()})
+                                  "marca": str(r[col_b]).strip(),
+                                  "modello": str(r[col_m]).strip(),
+                                  "calibro": str(r[col_c]).strip()})
             st.session_state["scarico_permit"]["articoli"] = new_items
             st.rerun()
-
     # ── dettaglio discrepanze (riferimento) ───────────────────────────────
     if rep["only_invoice"]:
-        st.markdown("**Sulla fattura ma NON sul permesso** (non esportabili così):")
+        st.markdown(T("**Sulla fattura ma NON sul permesso** (non esportabili così):",
+                      "**On the invoice but NOT on the permit** (not exportable as-is):"))
         st.dataframe(pd.DataFrame([
-            {"Matricola": x["matr_arma"], "Marca": x["marca"],
-             "Modello": x["modello"], "Calibro": x["calibro"]}
+            {T("Matricola", "Serial"): x["matr_arma"], T("Marca", "Brand"): x["marca"],
+             T("Modello", "Model"): x["modello"], T("Calibro", "Caliber"): x["calibro"]}
             for x in rep["only_invoice"]]), use_container_width=True, hide_index=True)
     if rep["only_permit"]:
-        st.markdown("**Sul permesso ma NON in fattura** (manca dalla vendita?):")
+        st.markdown(T("**Sul permesso ma NON in fattura** (manca dalla vendita?):",
+                      "**On the permit but NOT on the invoice** (missing from the sale?):"))
         st.dataframe(pd.DataFrame([
-            {"Matricola": x["matr_arma"], "Marca": x["marca"],
-             "Modello": x["modello"], "Calibro": x["calibro"]}
+            {T("Matricola", "Serial"): x["matr_arma"], T("Marca", "Brand"): x["marca"],
+             T("Modello", "Model"): x["modello"], T("Calibro", "Caliber"): x["calibro"]}
             for x in rep["only_permit"]]), use_container_width=True, hide_index=True)
     if rep["mismatches"]:
-        st.markdown("**Dati che non corrispondono** (fattura/magazzino ≠ permesso):")
+        st.markdown(T("**Dati che non corrispondono** (fattura/magazzino ≠ permesso):",
+                      "**Data that does not match** (invoice/stock ≠ permit):"))
         st.dataframe(pd.DataFrame([
-            {"Matricola": m["matricola"], "Campo": m["campo"],
-             "Fattura/Magazzino": m["fattura"], "Permesso": m["permesso"],
-             "Nota": m.get("nota", "")}
+            {T("Matricola", "Serial"): m["matricola"], T("Campo", "Field"): m["campo"],
+             T("Fattura/Magazzino", "Invoice/Stock"): m["fattura"],
+             T("Permesso", "Permit"): m["permesso"],
+             T("Nota", "Note"): m.get("nota", "")}
             for m in rep["mismatches"]]), use_container_width=True, hide_index=True)
 
 
@@ -767,140 +853,163 @@ def _render_scarico_fixes():
     if not fixes:
         return
     st.markdown("---")
-    st.markdown("#### 🔧 Matricole non trovate — correzioni suggerite")
-    st.caption("Probabili errori di lettura dal PDF. Controlla e premi **Applica** "
-               "per registrare la vendita con la matricola corretta.")
+    st.markdown(T("#### 🔧 Matricole non trovate — correzioni suggerite",
+                  "#### 🔧 Serials not found — suggested corrections"))
+    st.caption(T("Probabili errori di lettura dal PDF. Controlla e premi **Applica** "
+                 "per registrare la vendita con la matricola corretta.",
+                 "Likely OCR misreads from the PDF. Check and press **Apply** "
+                 "to register the sale with the correct serial."))
     for i, fx in enumerate(fixes):
         d, best = fx["data"], fx["best"]
         orig = str(d.get("matr_arma") or "").strip()
         sim = int(round(best["score"] * 100))
         c1, c2, c3 = st.columns([3, 3, 2])
-        c1.markdown(f"📄 letta: **{orig or '(vuota)'}**"
-                    + (f" · cliente {d.get('cliente')}" if d.get("cliente") else ""))
-        c2.markdown(f"✅ suggerita: **{best['matricola']}** "
-                    f"<span style='color:gray'>({sim}% · riga {best['riga']})</span>",
+        c1.markdown(T(f"📄 letta: **{orig or '(vuota)'}**", f"📄 read: **{orig or '(empty)'}**")
+                    + (T(f" · cliente {d.get('cliente')}", f" · customer {d.get('cliente')}")
+                       if d.get("cliente") else ""))
+        c2.markdown(T(f"✅ suggerita: **{best['matricola']}** ",
+                      f"✅ suggested: **{best['matricola']}** ")
+                    + T(f"<span style='color:gray'>({sim}% · riga {best['riga']})</span>",
+                        f"<span style='color:gray'>({sim}% · row {best['riga']})</span>"),
                     unsafe_allow_html=True)
-        if c3.button("Applica", key=f"fix_scar_{i}", type="primary"):
+        if c3.button(T("Applica", "Apply"), key=f"fix_scar_{i}", type="primary"):
             d2 = dict(d); d2["matr_arma"] = best["matricola"]
             try:
                 res = with_workbook(lambda _p: stock_agent.add_scarico(d2))
             except Exception as e:
-                flash(f"Errore: {e}", "error"); st.rerun()
+                flash(T(f"Errore: {e}", f"Error: {e}"), "error"); st.rerun()
             if res["status"] == "success":
-                flash(f"Scarico registrato con matricola {best['matricola']} "
-                      f"(riga {res['row']}).")
+                flash(T(f"Scarico registrato con matricola {best['matricola']} "
+                        f"(riga {res['row']}).",
+                        f"Sale registered with serial {best['matricola']} "
+                        f"(row {res['row']})."))
                 lst = st.session_state.get("scarico_fixes") or []
                 st.session_state["scarico_fixes"] = [
                     x for j, x in enumerate(lst) if j != i]
             else:
                 flash(res["message"], "error")
             st.rerun()
-    if st.button("Ignora tutti", key="fix_scar_clear"):
+    if st.button(T("Ignora tutti", "Ignore all"), key="fix_scar_clear"):
         st.session_state["scarico_fixes"] = []
         st.rerun()
 
 
 def section_registro():
-    st.subheader("📑 Esporta REGISTRO (per la P.S.)")
-    st.caption("Genera il registro aggiornato pronto da stampare, ricostruito dai dati attuali.")
-    if st.button("Genera registro", type="primary"):
+    st.subheader(T("📑 Esporta REGISTRO (per la P.S.)",
+                   "📑 Export REGISTER (for the police)"))
+    st.caption(T("Genera il registro aggiornato pronto da stampare, ricostruito dai dati attuali.",
+                 "Generates the up-to-date register ready to print, rebuilt from the current data."))
+    if st.button(T("Genera registro", "Generate register"), type="primary"):
         import tempfile
         xlsx_path = os.path.join(tempfile.gettempdir(), "REGISTRO_export.xlsx")
         pdf_path = os.path.join(tempfile.gettempdir(), "REGISTRO_export.pdf")
         res = with_workbook(
             lambda _p: stock_agent.export_registro(xlsx_path, pdf_path), read_only=True)
-        st.success(f"Registro generato: {res['righe']} operazioni.")
+        st.success(T(f"Registro generato: {res['righe']} operazioni.",
+                     f"Register generated: {res['righe']} operations."))
         with open(xlsx_path, "rb") as f:
-            st.download_button("⬇️ Scarica REGISTRO (Excel)", f.read(),
+            st.download_button(T("⬇️ Scarica REGISTRO (Excel)", "⬇️ Download REGISTER (Excel)"),
+                               f.read(),
                                file_name=f"REGISTRO {datetime.now():%Y-%m-%d}.xlsx",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         if res.get("pdf") and os.path.exists(pdf_path):
             with open(pdf_path, "rb") as f:
-                st.download_button("⬇️ Scarica REGISTRO (PDF stampa)", f.read(),
+                st.download_button(T("⬇️ Scarica REGISTRO (PDF stampa)",
+                                     "⬇️ Download REGISTER (print PDF)"), f.read(),
                                    file_name=f"REGISTRO {datetime.now():%Y-%m-%d}.pdf",
                                    mime="application/pdf")
         else:
-            st.info("PDF non generato (reportlab non installato) — usa l'Excel.")
-
+            st.info(T("PDF non generato (reportlab non installato) — usa l'Excel.",
+                      "PDF not generated (reportlab not installed) — use the Excel."))
     st.divider()
-    st.markdown("**📥 Scarica il file MAGAZZINO completo (tutti i fogli, aggiornato)**")
-    st.caption("Scarica l'intero workbook così com'è nello storage condiviso — "
-               "ISTRUZIONI, INVENTARIO, MAGAZZINO, REGISTRO, BASE, PRINT.")
-    if st.button("Prepara download MAGAZZINO completo", key="dl_full_wb"):
+    st.markdown(T("**📥 Scarica il file MAGAZZINO completo (tutti i fogli, aggiornato)**",
+                  "**📥 Download the full STOCK file (all sheets, up to date)**"))
+    st.caption(T("Scarica l'intero workbook così com'è nello storage condiviso — "
+                 "ISTRUZIONI, INVENTARIO, MAGAZZINO, REGISTRO, BASE, PRINT.",
+                 "Download the entire workbook as it is in shared storage — "
+                 "ISTRUZIONI, INVENTARIO, MAGAZZINO, REGISTRO, BASE, PRINT."))
+    if st.button(T("Prepara download MAGAZZINO completo", "Prepare full STOCK download"),
+                 key="dl_full_wb"):
         try:
             data = get_backend().read_bytes(storage.workbook_name())
             st.download_button(
-                "⬇️ Scarica MAGAZZINO completo (.xlsx)", data,
+                T("⬇️ Scarica MAGAZZINO completo (.xlsx)", "⬇️ Download full STOCK (.xlsx)"),
+                data,
                 file_name=f"{os.path.splitext(storage.workbook_name())[0]} "
                           f"{datetime.now():%Y-%m-%d %H%M}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_full_wb_btn")
         except Exception as e:
-            st.error(f"Impossibile scaricare il workbook: {e}")
+            st.error(T(f"Impossibile scaricare il workbook: {e}",
+                       f"Could not download the workbook: {e}"))
 
 
 def section_licenses():
-    st.subheader("📁 Archivio licenze (Export / Import / EUC)")
+    st.subheader(T("📁 Archivio licenze (Export / Import / EUC)",
+                   "📁 Licence archive (Export / Import / EUC)"))
     arch = LicenseArchive(get_backend())
-
     exp = arch.expiring_soon(days=60)
     if exp:
-        st.warning("In scadenza / scaduti: " +
+        st.warning(T("In scadenza / scaduti: ", "Expiring / expired: ") +
                    ", ".join(f"{e['doc_type']} {e.get('number','')} ({e['days_left']}g)" for e in exp[:8]))
-
-    with st.expander("➕ Carica nuova licenza / EUC"):
-        up = st.file_uploader("File (PDF/immagine/qualsiasi)", key="lic_up")
+    with st.expander(T("➕ Carica nuova licenza / EUC", "➕ Upload new licence / EUC")):
+        up = st.file_uploader(T("File (PDF/immagine/qualsiasi)", "File (PDF/image/any)"),
+                              key="lic_up")
         c1, c2 = st.columns(2)
-        doc_type = c1.selectbox("Tipo documento", DOC_TYPES)
-        number = c2.text_input("Numero")
+        doc_type = c1.selectbox(T("Tipo documento", "Document type"), DOC_TYPES)
+        number = c2.text_input(T("Numero", "Number"))
         c3, c4 = st.columns(2)
-        country = c3.text_input("Paese")
-        counterparty = c4.text_input("Controparte / Cliente")
+        country = c3.text_input(T("Paese", "Country"))
+        counterparty = c4.text_input(T("Controparte / Cliente", "Counterparty / Customer"))
         c5, c6 = st.columns(2)
-        issue = c5.text_input("Data emissione (GG/MM/AAAA)")
-        expiry = c6.text_input("Data scadenza (GG/MM/AAAA)")
+        issue = c5.text_input(T("Data emissione (GG/MM/AAAA)", "Issue date (DD/MM/YYYY)"))
+        expiry = c6.text_input(T("Data scadenza (GG/MM/AAAA)", "Expiry date (DD/MM/YYYY)"))
         c7, c8 = st.columns(2)
-        n_op = c7.text_input("N. operazione collegata")
-        inv = c8.text_input("N. fattura collegata")
-        tags = st.text_input("Tag (separati da virgola)")
-        notes = st.text_area("Note")
-        if st.button("Salva in archivio", type="primary"):
+        n_op = c7.text_input(T("N. operazione collegata", "Linked operation no."))
+        inv = c8.text_input(T("N. fattura collegata", "Linked invoice no."))
+        tags = st.text_input(T("Tag (separati da virgola)", "Tags (comma-separated)"))
+        notes = st.text_area(T("Note", "Notes"))
+        if st.button(T("Salva in archivio", "Save to archive"), type="primary"):
             if not up:
-                st.error("Seleziona un file.")
+                st.error(T("Seleziona un file.", "Select a file."))
             else:
                 arch.add(up.read(), up.name, {
                     "doc_type": doc_type, "number": number, "country": country,
                     "counterparty": counterparty, "issue_date": issue, "expiry_date": expiry,
                     "n_operazione": n_op, "invoice_no": inv,
                     "tags": [t.strip() for t in tags.split(",") if t.strip()], "notes": notes})
-                st.success("Licenza archiviata.")
+                st.success(T("Licenza archiviata.", "Licence archived."))
                 st.rerun()
-
-    st.markdown("##### Archivio")
+    st.markdown(T("##### Archivio", "##### Archive"))
     fc1, fc2 = st.columns([2, 1])
-    query = fc1.text_input("Cerca (numero, paese, controparte, n.op, tag…)")
-    ftype = fc2.selectbox("Filtra tipo", ["(tutti)"] + DOC_TYPES)
-    entries = arch.list(query=query or None, doc_type=None if ftype == "(tutti)" else ftype)
+    query = fc1.text_input(T("Cerca (numero, paese, controparte, n.op, tag…)",
+                             "Search (number, country, counterparty, op.no, tag…)"))
+    all_label = T("(tutti)", "(all)")
+    ftype = fc2.selectbox(T("Filtra tipo", "Filter type"), [all_label] + DOC_TYPES)
+    entries = arch.list(query=query or None, doc_type=None if ftype == all_label else ftype)
     if not entries:
-        st.info("Nessuna licenza in archivio.")
+        st.info(T("Nessuna licenza in archivio.", "No licences in the archive."))
         return
     for e in entries:
         with st.container(border=True):
             cols = st.columns([3, 2, 2, 2, 1])
             cols[0].markdown(f"**{e['doc_type']}** · {e.get('number','—')}\n\n{e['filename']}")
-            cols[1].write(f"🌍 {e.get('country','—')}\n\n{e.get('counterparty','—')}")
-            cols[2].write(f"Emessa: {e.get('issue_date','—')}\n\nScad.: {e.get('expiry_date','—')}")
-            cols[3].write(f"N.Op: {e.get('n_operazione','—')}\n\nFatt: {e.get('invoice_no','—')}")
+            cols[1].write(T(f"🌍 {e.get('country','—')}\n\n{e.get('counterparty','—')}",
+                            f"🌍 {e.get('country','—')}\n\n{e.get('counterparty','—')}"))
+            cols[2].write(T(f"Emessa: {e.get('issue_date','—')}\n\nScad.: {e.get('expiry_date','—')}",
+                            f"Issued: {e.get('issue_date','—')}\n\nExp.: {e.get('expiry_date','—')}"))
+            cols[3].write(T(f"N.Op: {e.get('n_operazione','—')}\n\nFatt: {e.get('invoice_no','—')}",
+                            f"Op.no: {e.get('n_operazione','—')}\n\nInv: {e.get('invoice_no','—')}"))
             data, fname = arch.get_file(e["id"])
             cols[4].download_button("⬇️", data, file_name=fname, key=f"dl_{e['id']}")
             if e.get("tags"):
                 st.caption("🏷️ " + ", ".join(e["tags"]))
-            if st.button("Elimina", key=f"del_{e['id']}"):
+            if st.button(T("Elimina", "Delete"), key=f"del_{e['id']}"):
                 arch.delete(e["id"]); st.rerun()
 
 
 def _storage_error_message(e):
-    """Turn a raw storage/botocore exception into an actionable Italian message.
+    """Turn a raw storage/botocore exception into an actionable message.
     Streamlit redacts uncaught errors, so we read the code ourselves and show it."""
     try:
         from botocore.exceptions import ClientError, EndpointConnectionError, \
@@ -908,71 +1017,88 @@ def _storage_error_message(e):
     except Exception:
         ClientError = EndpointConnectionError = NoCredentialsError = ()
     if NoCredentialsError and isinstance(e, NoCredentialsError):
-        return ("Credenziali storage mancanti. Controlla AWS_ACCESS_KEY_ID e "
-                "AWS_SECRET_ACCESS_KEY nei secret dell'app.")
+        return T("Credenziali storage mancanti. Controlla AWS_ACCESS_KEY_ID e "
+                 "AWS_SECRET_ACCESS_KEY nei secret dell'app.",
+                 "Storage credentials missing. Check AWS_ACCESS_KEY_ID and "
+                 "AWS_SECRET_ACCESS_KEY in the app secrets.")
     if EndpointConnectionError and isinstance(e, EndpointConnectionError):
-        return ("Impossibile raggiungere lo storage. Controlla BCW_S3_ENDPOINT "
-                f"(endpoint R2/S3). Dettaglio: {e}")
+        return T(f"Impossibile raggiungere lo storage. Controlla BCW_S3_ENDPOINT "
+                 f"(endpoint R2/S3). Dettaglio: {e}",
+                 f"Cannot reach the storage. Check BCW_S3_ENDPOINT "
+                 f"(R2/S3 endpoint). Detail: {e}")
     if ClientError and isinstance(e, ClientError):
         err = (getattr(e, "response", {}) or {}).get("Error", {})
         code = err.get("Code", "?")
         msg = err.get("Message", "")
         hints = {
-            "InvalidAccessKeyId": "La access key non è valida — ricontrolla AWS_ACCESS_KEY_ID.",
-            "SignatureDoesNotMatch": "La secret key non corrisponde — ricontrolla AWS_SECRET_ACCESS_KEY.",
-            "AccessDenied": "Accesso negato — il token R2 non ha permessi di scrittura sul bucket.",
-            "NoSuchBucket": "Il bucket non esiste — controlla BCW_S3_BUCKET.",
+            "InvalidAccessKeyId": T("La access key non è valida — ricontrolla AWS_ACCESS_KEY_ID.",
+                                    "The access key is invalid — recheck AWS_ACCESS_KEY_ID."),
+            "SignatureDoesNotMatch": T("La secret key non corrisponde — ricontrolla AWS_SECRET_ACCESS_KEY.",
+                                       "The secret key does not match — recheck AWS_SECRET_ACCESS_KEY."),
+            "AccessDenied": T("Accesso negato — il token R2 non ha permessi di scrittura sul bucket.",
+                              "Access denied — the R2 token lacks write permission on the bucket."),
+            "NoSuchBucket": T("Il bucket non esiste — controlla BCW_S3_BUCKET.",
+                              "The bucket does not exist — check BCW_S3_BUCKET."),
         }
         hint = hints.get(code, "")
-        return (f"Errore storage [{code}]: {msg} {hint}").strip()
-    return f"Errore storage: {e}"
+        return (T(f"Errore storage [{code}]: {msg} {hint}",
+                  f"Storage error [{code}]: {msg} {hint}")).strip()
+    return T(f"Errore storage: {e}", f"Storage error: {e}")
 
 
 def section_settings(backend):
-    st.subheader("⚙️ Impostazioni")
-    st.write(f"**Backend storage:** `{backend.name}`")
-    st.write(f"**Workbook:** `{storage.workbook_name()}`")
-    st.write(f"**Utente corrente:** `{current_user()}` "
-             "_(modificabile nella barra laterale)_")
+    st.subheader(T("⚙️ Impostazioni", "⚙️ Settings"))
+    st.write(T(f"**Backend storage:** `{backend.name}`", f"**Storage backend:** `{backend.name}`"))
+    st.write(T(f"**Workbook:** `{storage.workbook_name()}`",
+               f"**Workbook:** `{storage.workbook_name()}`"))
+    st.write(T(f"**Utente corrente:** `{current_user()}` "
+               "_(modificabile nella barra laterale)_",
+               f"**Current user:** `{current_user()}` "
+               "_(editable in the sidebar)_"))
     if not backend_ready(backend):
-        st.warning("Il workbook non è ancora presente nello storage condiviso.")
-        seed = st.file_uploader("Carica il MAGAZZINO iniziale per inizializzare", type=["xlsx"])
-        if seed and st.button("Inizializza storage"):
+        st.warning(T("Il workbook non è ancora presente nello storage condiviso.",
+                     "The workbook is not yet present in shared storage."))
+        seed = st.file_uploader(T("Carica il MAGAZZINO iniziale per inizializzare",
+                                  "Upload the initial STOCK file to initialize"),
+                                type=["xlsx"])
+        if seed and st.button(T("Inizializza storage", "Initialize storage")):
             try:
                 backend.write_bytes(storage.workbook_name(), seed.read())
             except Exception as e:
                 st.error(_storage_error_message(e))
             else:
-                st.success("Workbook caricato nello storage condiviso."); st.rerun()
+                st.success(T("Workbook caricato nello storage condiviso.",
+                             "Workbook uploaded to shared storage.")); st.rerun()
     else:
-        st.success("Workbook presente nello storage condiviso.")
-        if st.button("Verifica struttura workbook"):
+        st.success(T("Workbook presente nello storage condiviso.",
+                     "Workbook present in shared storage."))
+        if st.button(T("Verifica struttura workbook", "Verify workbook structure")):
             res = with_workbook(lambda _p: stock_agent.validate_workbook(), read_only=True)
             st.json(res)
 
 
 # ── Documenti (proforma / packing / declarations) ─────────────────────────────
-
 def _bulk_excel(kind, company=None, key=None):
-    """Template-download + Excel-upload widget for a bulk flow.
-    Returns the parsed data on a fresh import (list of dicts, or for packing a
-    {n_parcels, parcels} dict), otherwise None. Caller seeds the editors."""
+    """Template-download + Excel-upload widget for a bulk flow."""
     key = key or kind
     suffix = f"_{company}" if company else ""
-    with st.expander("⬆️ Carica in blocco da Excel"):
-        st.caption("Scarica il modello, compilalo, poi ricaricalo per inserire molte righe insieme.")
+    with st.expander(T("⬆️ Carica in blocco da Excel", "⬆️ Bulk upload from Excel")):
+        st.caption(T("Scarica il modello, compilalo, poi ricaricalo per inserire molte righe insieme.",
+                     "Download the template, fill it in, then re-upload it to add many rows at once."))
         st.download_button(
-            "⬇️ Scarica modello Excel",
+            T("⬇️ Scarica modello Excel", "⬇️ Download Excel template"),
             bulk_io.template_bytes(kind, company),
             file_name=f"modello_{kind}{suffix}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"tpl_{key}")
-        up = st.file_uploader("Carica il file compilato", type=["xlsx"], key=f"up_{key}")
-        if up is not None and st.button("📥 Importa righe", key=f"imp_{key}"):
+        up = st.file_uploader(T("Carica il file compilato", "Upload the filled-in file"),
+                              type=["xlsx"], key=f"up_{key}")
+        if up is not None and st.button(T("📥 Importa righe", "📥 Import rows"), key=f"imp_{key}"):
             try:
                 return bulk_io.parse(kind, up.read(), company)
             except Exception as e:
-                st.error(f"Errore nella lettura dell'Excel: {e}")
+                st.error(T(f"Errore nella lettura dell'Excel: {e}",
+                           f"Error reading the Excel file: {e}"))
     return None
 
 
@@ -987,13 +1113,14 @@ def _archive_doc(base_name, html, meta):
             pdf_bytes = None
         DocArchive(get_backend()).add(base_name, html, pdf_bytes, meta)
     except Exception as e:
-        st.warning(f"Documento generato, ma non archiviato ({e}).")
+        st.warning(T(f"Documento generato, ma non archiviato ({e}).",
+                     f"Document generated, but not archived ({e})."))
 
 
 def _doc_downloads(full_html, base_name):
     """Render HTML preview + PDF/Word download buttons for a generated document."""
     import streamlit.components.v1 as components
-    st.markdown("##### Anteprima")
+    st.markdown(T("##### Anteprima", "##### Preview"))
     components.html(full_html, height=560, scrolling=True)
     c1, c2, c3 = st.columns(3)
     try:
@@ -1001,7 +1128,8 @@ def _doc_downloads(full_html, base_name):
         c1.download_button("⬇️ PDF", pdf_bytes, file_name=f"{base_name}.pdf",
                            mime="application/pdf", type="primary")
     except Exception as e:
-        c1.warning(f"PDF non disponibile ({e}). Usa Word o stampa l'anteprima.")
+        c1.warning(T(f"PDF non disponibile ({e}). Usa Word o stampa l'anteprima.",
+                     f"PDF unavailable ({e}). Use Word or print the preview."))
     doc_bytes = doc_templates.to_doc(full_html)
     c2.download_button("⬇️ Word", doc_bytes, file_name=f"{base_name}.doc",
                        mime="application/msword")
@@ -1010,72 +1138,82 @@ def _doc_downloads(full_html, base_name):
 
 
 def _buyer_inputs(prefix):
-    st.markdown("**Destinatario / Buyer**")
+    st.markdown(T("**Destinatario / Buyer**", "**Recipient / Buyer**"))
     b1, b2 = st.columns(2)
-    name = b1.text_input("Nome / Name", key=f"{prefix}_b_name")
-    trade = b2.text_input("Ragione sociale / Trade", key=f"{prefix}_b_trade")
-    addr = st.text_input("Indirizzo / Address", key=f"{prefix}_b_addr")
+    name = b1.text_input(T("Nome / Name", "Name"), key=f"{prefix}_b_name")
+    trade = b2.text_input(T("Ragione sociale / Trade", "Company name / Trade"),
+                          key=f"{prefix}_b_trade")
+    addr = st.text_input(T("Indirizzo / Address", "Address"), key=f"{prefix}_b_addr")
     b3, b4 = st.columns(2)
-    country = b3.text_input("Paese / Country", key=f"{prefix}_b_country")
-    phone = b4.text_input("Telefono / Phone", key=f"{prefix}_b_phone")
+    country = b3.text_input(T("Paese / Country", "Country"), key=f"{prefix}_b_country")
+    phone = b4.text_input(T("Telefono / Phone", "Phone"), key=f"{prefix}_b_phone")
     return {"name": name, "trade": trade, "addr": addr, "country": country, "phone": phone}
 
 
-def _stock_picker(target_key, map_fn, label="➕ Aggiungi da magazzino (in giacenza)"):
+def _stock_picker(target_key, map_fn, label=None):
     """BCW-only: pick in-stock guns and append mapped rows to st.session_state[target_key]."""
+    if label is None:
+        label = T("➕ Aggiungi da magazzino (in giacenza)",
+                  "➕ Add from stock (in stock)")
     with st.expander(label):
-        q = st.text_input("Filtra (matricola, marca, modello, calibro, tipologia)",
+        q = st.text_input(T("Filtra (matricola, marca, modello, calibro, tipologia)",
+                            "Filter (serial, brand, model, caliber, type)"),
                           key=f"{target_key}_pick_q")
         try:
             stock = with_workbook(lambda _p: stock_agent.list_in_stock(q or None),
                                   read_only=True)
         except Exception as e:
-            st.error(f"Impossibile leggere il magazzino: {e}")
+            st.error(T(f"Impossibile leggere il magazzino: {e}",
+                       f"Could not read the stock: {e}"))
             return
         if not stock:
-            st.info("Nessun articolo in giacenza corrispondente.")
+            st.info(T("Nessun articolo in giacenza corrispondente.",
+                      "No matching items in stock."))
             return
-        st.caption(f"{len(stock)} articoli in giacenza.")
+        st.caption(T(f"{len(stock)} articoli in giacenza.", f"{len(stock)} items in stock."))
+        col_sel = T("Sel", "Sel")
         df = pd.DataFrame([{
-            "Sel": False, "Tipologia": s["tipologia"], "Marca": s["marca"],
-            "Modello": s["modello"], "Calibro": s["calibro"],
-            "Matr. arma": s["matr_arma"], "Matr. canna": s["matr_canna"],
-            "Costo €": s["costo_compl"],
+            col_sel: False, T("Tipologia", "Type"): s["tipologia"],
+            T("Marca", "Brand"): s["marca"], T("Modello", "Model"): s["modello"],
+            T("Calibro", "Caliber"): s["calibro"],
+            T("Matr. arma", "Weapon s/n"): s["matr_arma"],
+            T("Matr. canna", "Barrel s/n"): s["matr_canna"],
+            T("Costo €", "Cost €"): s["costo_compl"],
         } for s in stock])
         edited = st.data_editor(df, hide_index=True, use_container_width=True,
                                 key=f"{target_key}_pick_tbl",
-                                column_config={"Sel": st.column_config.CheckboxColumn("Sel")})
-        if st.button("Aggiungi selezionati", key=f"{target_key}_pick_add"):
-            chosen = [stock[i] for i in edited.index[edited["Sel"]].tolist()]
+                                column_config={col_sel: st.column_config.CheckboxColumn(col_sel)})
+        if st.button(T("Aggiungi selezionati", "Add selected"), key=f"{target_key}_pick_add"):
+            chosen = [stock[i] for i in edited.index[edited[col_sel]].tolist()]
             if not chosen:
-                st.warning("Nessuna riga selezionata.")
+                st.warning(T("Nessuna riga selezionata.", "No rows selected."))
             else:
                 cur = list(st.session_state.get(target_key, []))
                 cur.extend(map_fn(s) for s in chosen)
                 st.session_state[target_key] = cur
-                st.success(f"{len(chosen)} articoli aggiunti.")
+                st.success(T(f"{len(chosen)} articoli aggiunti.", f"{len(chosen)} items added."))
                 st.rerun()
 
 
 def _doc_proforma():
-    company = st.radio("Azienda", ["BME", "BCW"], horizontal=True, key="pf_company")
+    company = st.radio(T("Azienda", "Company"), ["BME", "BCW"], horizontal=True, key="pf_company")
     co = doc_templates.COMPANIES[company]
     backend = get_backend()
-    st.caption(f"Prossimo numero: **{doc_numbering.preview_next(backend, company, 'proforma')}** "
-               f"· Valuta: {co['currency']}")
-    date = st.date_input("Data", key="pf_date")
+    st.caption(T(f"Prossimo numero: **{doc_numbering.preview_next(backend, company, 'proforma')}** "
+                 f"· Valuta: {co['currency']}",
+                 f"Next number: **{doc_numbering.preview_next(backend, company, 'proforma')}** "
+                 f"· Currency: {co['currency']}"))
+    date = st.date_input(T("Data", "Date"), key="pf_date")
     buyer = _buyer_inputs("pf")
-
     items_key = f"pf_items_{company}"
     if items_key not in st.session_state:
         st.session_state[items_key] = []
-
     bulk = _bulk_excel("proforma", company, key=f"pf_{company}")
     if bulk:
         st.session_state[items_key] = bulk
-        st.success(f"{len(bulk)} righe importate dall'Excel.")
+        st.success(T(f"{len(bulk)} righe importate dall'Excel.",
+                     f"{len(bulk)} rows imported from Excel."))
         st.rerun()
-
     if company == "BCW":
         _stock_picker(items_key, lambda s: {
             "tipo": s["tipologia"], "cal": s["calibro"], "marca": s["marca"],
@@ -1084,7 +1222,6 @@ def _doc_proforma():
         cols = ["tipo", "cal", "marca", "desc", "serial", "qty", "price"]
     else:
         cols = ["type", "gauge", "brand", "serial", "qty", "price"]
-
     base = st.session_state[items_key] if st.session_state[items_key] else [
         {c: ("" if c not in ("qty", "price") else (1 if c == "qty" else 0.0)) for c in cols}]
     df = pd.DataFrame(base, columns=cols)
@@ -1092,9 +1229,8 @@ def _doc_proforma():
                             column_config={
                                 "qty": st.column_config.NumberColumn("qty", step=1),
                                 "price": st.column_config.NumberColumn("price", format="%.2f")})
-    notes = st.text_area("Note", key="pf_notes")
-
-    if st.button("📄 Genera proforma", type="primary", key="pf_gen"):
+    notes = st.text_area(T("Note", "Notes"), key="pf_notes")
+    if st.button(T("📄 Genera proforma", "📄 Generate proforma"), type="primary", key="pf_gen"):
         items = [r for r in edited.to_dict("records")
                  if any(str(v).strip() for v in r.values())]
         number = doc_numbering.next_number(backend, company, "proforma", owner=current_user())
@@ -1109,19 +1245,20 @@ def _doc_proforma():
             "doc_date": date.isoformat(), "user": current_user()})
         st.session_state["pf_result"] = (html, number)
         st.session_state[items_key] = []
-        st.success(f"Proforma {number} generata e archiviata.")
+        st.success(T(f"Proforma {number} generata e archiviata.",
+                     f"Proforma {number} generated and archived."))
     if st.session_state.get("pf_result"):
         html, number = st.session_state["pf_result"]
         _doc_downloads(html, number)
 
 
 def _doc_packing():
-    company = st.radio("Azienda", ["BME", "BCW"], horizontal=True, key="pk_company")
+    company = st.radio(T("Azienda", "Company"), ["BME", "BCW"], horizontal=True, key="pk_company")
     backend = get_backend()
-    st.caption(f"Prossimo numero: **{doc_numbering.preview_next(backend, company, 'packing')}**")
-    date = st.date_input("Data", key="pk_date")
+    st.caption(T(f"Prossimo numero: **{doc_numbering.preview_next(backend, company, 'packing')}**",
+                 f"Next number: **{doc_numbering.preview_next(backend, company, 'packing')}**"))
+    date = st.date_input(T("Data", "Date"), key="pk_date")
     buyer = _buyer_inputs("pk")
-
     pbulk = _bulk_excel("packing", company, key=f"pk_{company}")
     if pbulk:
         st.session_state["pk_nparcels"] = max(1, pbulk["n_parcels"])
@@ -1129,38 +1266,41 @@ def _doc_packing():
             st.session_state[f"pk_items_{company}_{i}"] = parcel["items"] or [{}]
             st.session_state[f"pk_dims_{i}"] = parcel["dims"]
             st.session_state[f"pk_weight_{i}"] = parcel["weight"]
-        st.success(f"{pbulk['n_parcels']} colli importati dall'Excel.")
+        st.success(T(f"{pbulk['n_parcels']} colli importati dall'Excel.",
+                     f"{pbulk['n_parcels']} parcels imported from Excel."))
         st.rerun()
-
     if "pk_nparcels" not in st.session_state:
         st.session_state["pk_nparcels"] = 1
-    n_parcels = st.number_input("Numero di colli / parcels", min_value=1, max_value=50,
-                                step=1, key="pk_nparcels")
+    n_parcels = st.number_input(T("Numero di colli / parcels", "Number of parcels"),
+                                min_value=1, max_value=50, step=1, key="pk_nparcels")
     pcols = ["qty", "type", "brand", "model", "caliber", "serial1", "serial2"]
     parcels_input = []
     for i in range(int(n_parcels)):
-        st.markdown(f"**Collo / Parcel {i + 1}**")
+        st.markdown(T(f"**Collo / Parcel {i + 1}**", f"**Parcel {i + 1}**"))
         pk_key = f"pk_items_{company}_{i}"
         if company == "BCW":
             _stock_picker(pk_key, lambda s: {
                 "qty": s["quantita"], "type": s["tipologia"], "brand": s["marca"],
                 "model": s["modello"], "caliber": s["calibro"],
                 "serial1": s["matr_arma"], "serial2": s["matr_canna"]},
-                label=f"➕ Aggiungi da magazzino → collo {i + 1}")
+                label=T(f"➕ Aggiungi da magazzino → collo {i + 1}",
+                        f"➕ Add from stock → parcel {i + 1}"))
         base = st.session_state.get(pk_key) or [{c: ("" if c != "qty" else 1) for c in pcols}]
         df = pd.DataFrame(base, columns=pcols)
         edited = st.data_editor(df, num_rows="dynamic", use_container_width=True,
                                 key=f"pk_editor_{i}",
                                 column_config={"qty": st.column_config.NumberColumn("qty", step=1)})
         d1, d2 = st.columns(2)
-        dims = d1.text_input("Dimensioni pacco (es. 60x40x30 CM)", key=f"pk_dims_{i}")
-        weight = d2.text_input("Peso pacco (es. 20,5 KG)", key=f"pk_weight_{i}")
+        dims = d1.text_input(T("Dimensioni pacco (es. 60x40x30 CM)",
+                               "Parcel dimensions (e.g. 60x40x30 CM)"), key=f"pk_dims_{i}")
+        weight = d2.text_input(T("Peso pacco (es. 20,5 KG)", "Parcel weight (e.g. 20.5 KG)"),
+                               key=f"pk_weight_{i}")
         items = [r for r in edited.to_dict("records")
                  if any(str(v).strip() for v in r.values())]
         parcels_input.append({"items": items, "dims": dims, "weight": weight})
-
-    notes = st.text_area("Note", key="pk_notes")
-    if st.button("📦 Genera packing list", type="primary", key="pk_gen"):
+    notes = st.text_area(T("Note", "Notes"), key="pk_notes")
+    if st.button(T("📦 Genera packing list", "📦 Generate packing list"),
+                 type="primary", key="pk_gen"):
         number = doc_numbering.next_number(backend, company, "packing", owner=current_user())
         f = {"company": company, "number": number, "date": date.isoformat(),
              "buyer": buyer, "parcels": parcels_input, "notes": notes or ""}
@@ -1173,42 +1313,49 @@ def _doc_packing():
         st.session_state["pk_result"] = (html, number)
         for i in range(int(n_parcels)):
             st.session_state.pop(f"pk_items_{company}_{i}", None)
-        st.success(f"Packing list {number} generata e archiviata.")
+        st.success(T(f"Packing list {number} generata e archiviata.",
+                     f"Packing list {number} generated and archived."))
     if st.session_state.get("pk_result"):
         html, number = st.session_state["pk_result"]
         _doc_downloads(html, number)
 
 
 def _doc_declarations():
-    st.caption("EUR1 + End User Certificate (BCW). Emessi sulla fattura finale — "
-               "non consumano un numero di proforma.")
+    st.caption(T("EUR1 + End User Certificate (BCW). Emessi sulla fattura finale — "
+                 "non consumano un numero di proforma.",
+                 "EUR1 + End User Certificate (BCW). Issued on the final invoice — "
+                 "they do not consume a proforma number."))
     buyer = _buyer_inputs("ef")
-    st.markdown("**Dettagli dichiarazione** — i dati BCW sono già precompilati (modificabili).")
+    st.markdown(T("**Dettagli dichiarazione** — i dati BCW sono già precompilati (modificabili).",
+                  "**Declaration details** — BCW data is pre-filled (editable)."))
     BCW_SEAT = "Via Matteotti 311 – Gardone Val Trompia, 25063 (BS) – Italia"
     c1, c2 = st.columns(2)
-    rep = c1.text_input("Legale rappresentante (firma)", value="Antoine Abi Saab",
-                        key="ef_rep")
-    sender = c2.text_input("Ditta mittente", value=doc_templates.COMPANIES["BCW"]["name"],
-                           key="ef_sender")
-    seat = st.text_input("Sede ditta", value=BCW_SEAT, key="ef_seat")
+    rep = c1.text_input(T("Legale rappresentante (firma)", "Legal representative (signature)"),
+                        value="Antoine Abi Saab", key="ef_rep")
+    sender = c2.text_input(T("Ditta mittente", "Sending company"),
+                           value=doc_templates.COMPANIES["BCW"]["name"], key="ef_sender")
+    seat = st.text_input(T("Sede ditta", "Company seat"), value=BCW_SEAT, key="ef_seat")
     c3, c4 = st.columns(2)
-    inv_no = c3.text_input("N. fattura esportazione", key="ef_invno")
-    inv_date = c4.date_input("Data fattura", key="ef_invdate")
+    inv_no = c3.text_input(T("N. fattura esportazione", "Export invoice no."), key="ef_invno")
+    inv_date = c4.date_input(T("Data fattura", "Invoice date"), key="ef_invdate")
     c5, c6 = st.columns(2)
-    dest = c5.text_input("Paese di destinazione", key="ef_dest")
-    contract = c6.text_input("N. contratto (opz.)", key="ef_contract")
-    commodity = st.text_area("Descrizione dettagliata merce", key="ef_commodity")
-    st.markdown("**Spedizioniere incaricato** (default BS Cargo — modificabile)")
+    dest = c5.text_input(T("Paese di destinazione", "Destination country"), key="ef_dest")
+    contract = c6.text_input(T("N. contratto (opz.)", "Contract no. (opt.)"), key="ef_contract")
+    commodity = st.text_area(T("Descrizione dettagliata merce", "Detailed goods description"),
+                             key="ef_commodity")
+    st.markdown(T("**Spedizioniere incaricato** (default BS Cargo — modificabile)",
+                  "**Assigned freight forwarder** (default BS Cargo — editable)"))
     cf1, cf2 = st.columns(2)
-    forwarder = cf1.text_input("Società spedizioniere", value="BS CARGO SCS SRL",
-                               key="ef_forwarder")
-    doganalista = cf2.text_input("Doganalista", value="MASSIMO TURINELLI",
-                                 key="ef_doganalista")
+    forwarder = cf1.text_input(T("Società spedizioniere", "Freight forwarder company"),
+                               value="BS CARGO SCS SRL", key="ef_forwarder")
+    doganalista = cf2.text_input(T("Doganalista", "Customs broker"),
+                                 value="MASSIMO TURINELLI", key="ef_doganalista")
     c7, c8 = st.columns(2)
-    place = c7.text_input("Luogo firma", value="Gardone Val Trompia", key="ef_place")
-    sign_date = c8.date_input("Data firma", key="ef_signdate")
-
-    if st.button("📜 Genera dichiarazioni (EUR1 + EUC)", type="primary", key="ef_gen"):
+    place = c7.text_input(T("Luogo firma", "Signature place"),
+                          value="Gardone Val Trompia", key="ef_place")
+    sign_date = c8.date_input(T("Data firma", "Signature date"), key="ef_signdate")
+    if st.button(T("📜 Genera dichiarazioni (EUR1 + EUC)",
+                   "📜 Generate declarations (EUR1 + EUC)"), type="primary", key="ef_gen"):
         f = {"company": "BCW", "buyer": buyer, "ef": {
             "rep": rep, "sender": sender, "seat": seat, "invNo": inv_no,
             "invDate": inv_date.isoformat(), "dest": dest, "contract": contract,
@@ -1222,35 +1369,40 @@ def _doc_declarations():
             "total": "", "currency": "",
             "doc_date": inv_date.isoformat(), "user": current_user()})
         st.session_state["ef_result"] = html
-        st.success("Dichiarazioni generate e archiviate.")
+        st.success(T("Dichiarazioni generate e archiviate.",
+                     "Declarations generated and archived."))
     if st.session_state.get("ef_result"):
         _doc_downloads(st.session_state["ef_result"],
                        f"EUR1-EUC {st.session_state.get('ef_invno','')}".strip())
 
 
 def _doc_archive_view():
-    st.markdown("**Registro documenti emessi** — ogni proforma, packing list e "
-                "dichiarazione generata viene salvata qui e può essere riscaricata.")
+    st.markdown(T("**Registro documenti emessi** — ogni proforma, packing list e "
+                  "dichiarazione generata viene salvata qui e può essere riscaricata.",
+                  "**Issued documents register** — every generated proforma, packing "
+                  "list and declaration is saved here and can be re-downloaded."))
     arch = DocArchive(get_backend())
     f1, f2, f3 = st.columns([2, 1, 1])
-    query = f1.text_input("Cerca (numero, cliente, utente…)", key="docarch_q")
-    company = f2.selectbox("Azienda", ["(tutte)", "BME", "BCW"], key="docarch_co")
-    type_labels = {"(tutti)": None, **{v: k for k, v in DOC_TYPE_LABELS.items()}}
-    ftype = f3.selectbox("Tipo", list(type_labels.keys()), key="docarch_ty")
-
+    query = f1.text_input(T("Cerca (numero, cliente, utente…)",
+                            "Search (number, customer, user…)"), key="docarch_q")
+    all_co = T("(tutte)", "(all)")
+    company = f2.selectbox(T("Azienda", "Company"), [all_co, "BME", "BCW"], key="docarch_co")
+    all_ty = T("(tutti)", "(all)")
+    type_labels = {all_ty: None, **{v: k for k, v in DOC_TYPE_LABELS.items()}}
+    ftype = f3.selectbox(T("Tipo", "Type"), list(type_labels.keys()), key="docarch_ty")
     entries = arch.list(
         query=query or None,
-        company=None if company == "(tutte)" else company,
+        company=None if company == all_co else company,
         doc_type=type_labels[ftype])
-
-    st.caption(f"{len(entries)} documenti")
+    st.caption(T(f"{len(entries)} documenti", f"{len(entries)} documents"))
     if not entries:
-        st.info("Nessun documento archiviato ancora.")
+        st.info(T("Nessun documento archiviato ancora.", "No documents archived yet."))
         return
-
     hdr = st.columns([2, 1, 1, 2, 2, 1, 1, 1])
-    for col, label in zip(hdr, ["Numero", "Azienda", "Tipo", "Cliente",
-                                 "Data", "Utente", "PDF", "HTML"]):
+    labels = [T("Numero", "Number"), T("Azienda", "Company"), T("Tipo", "Type"),
+              T("Cliente", "Customer"), T("Data", "Date"), T("Utente", "User"),
+              "PDF", "HTML"]
+    for col, label in zip(hdr, labels):
         col.markdown(f"**{label}**")
     for e in entries:
         c = st.columns([2, 1, 1, 2, 2, 1, 1, 1])
@@ -1272,9 +1424,11 @@ def _doc_archive_view():
 
 
 def section_documents():
-    st.subheader("📄 Documenti")
-    sub = st.tabs(["🧾 Proforma", "📦 Packing list", "📜 Dichiarazioni (EUR1+EUC)",
-                   "📚 Documenti emessi"])
+    st.subheader(T("📄 Documenti", "📄 Documents"))
+    sub = st.tabs([T("🧾 Proforma", "🧾 Proforma"),
+                   T("📦 Packing list", "📦 Packing list"),
+                   T("📜 Dichiarazioni (EUR1+EUC)", "📜 Declarations (EUR1+EUC)"),
+                   T("📚 Documenti emessi", "📚 Issued documents")])
     with sub[0]:
         _doc_proforma()
     with sub[1]:
@@ -1286,34 +1440,43 @@ def section_documents():
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
-
 def main():
-    st.title("🔫 BCW – Gestione Magazzino & Registro")
+    st.title(T("🔫 BCW – Gestione Magazzino & Registro",
+               "🔫 BCW – Stock & Register Management"))
     render_flash()
     api_key = get_api_key()
     backend = get_backend()
-
     with st.sidebar:
-        st.text_input("Il tuo nome", key="user_name", placeholder="es. Marco")
+        # Language switch — default English, re-renders the whole UI on change.
+        lang_choice = st.radio(
+            "🌐 Language / Lingua", ["English", "Italiano"],
+            index=0 if st.session_state.get("lang", "en") == "en" else 1,
+            horizontal=True, key="_lang_radio")
+        st.session_state["lang"] = "en" if lang_choice == "English" else "it"
+        st.divider()
+        st.text_input(T("Il tuo nome", "Your name"), key="user_name",
+                      placeholder=T("es. Marco", "e.g. Marco"))
         if not api_key:
             k = st.text_input("Anthropic API Key", type="password")
-            if st.button("Salva key"):
+            if st.button(T("Salva key", "Save key")):
                 st.session_state["api_key"] = k; st.rerun()
-        st.caption(f"Storage: {backend.name}")
-
+        st.caption(T(f"Storage: {backend.name}", f"Storage: {backend.name}"))
     if not backend_ready(backend):
-        st.warning("Workbook non inizializzato — vai su **Impostazioni** per caricarlo.")
+        st.warning(T("Workbook non inizializzato — vai su **Impostazioni** per caricarlo.",
+                     "Workbook not initialized — go to **Settings** to upload it."))
         section_settings(backend); return
-
-    tabs = st.tabs(["📊 Dashboard", "➕ Carico", "➖ Scarico", "🔎 Cerca",
-                    "📄 Documenti", "📑 Registro", "📁 Licenze", "⚙️ Impostazioni"])
+    tabs = st.tabs([T("📊 Dashboard", "📊 Dashboard"), T("➕ Carico", "➕ Load"),
+                    T("➖ Scarico", "➖ Unload"), T("🔎 Cerca", "🔎 Search"),
+                    T("📄 Documenti", "📄 Documents"), T("📑 Registro", "📑 Register"),
+                    T("📁 Licenze", "📁 Licences"), T("⚙️ Impostazioni", "⚙️ Settings")])
     with tabs[0]:
         section_dashboard()
     with tabs[1]:
         if api_key:
             section_carico(api_key)
         else:
-            st.info("Inserisci l'API key nella barra laterale per l'estrazione automatica.")
+            st.info(T("Inserisci l'API key nella barra laterale per l'estrazione automatica.",
+                      "Enter the API key in the sidebar for automatic extraction."))
             section_carico("")
     with tabs[2]:
         if api_key:
