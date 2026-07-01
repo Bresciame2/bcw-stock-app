@@ -944,7 +944,7 @@ def section_registro():
                        f"Could not download the workbook: {e}"))
 
 
-def section_licenses():
+def section_licenses(api_key=""):
     st.subheader(T("📁 Archivio licenze (Export / Import / EUC)",
                    "📁 Licence archive (Export / Import / EUC)"))
     arch = LicenseArchive(get_backend())
@@ -952,32 +952,76 @@ def section_licenses():
     if exp:
         st.warning(T("In scadenza / scaduti: ", "Expiring / expired: ") +
                    ", ".join(f"{e['doc_type']} {e.get('number','')} ({e['days_left']}g)" for e in exp[:8]))
-    with st.expander(T("➕ Carica nuova licenza / EUC", "➕ Upload new licence / EUC")):
+    with st.expander(T("➕ Carica nuova licenza / EUC", "➕ Upload new licence / EUC"),
+                     expanded=True):
         up = st.file_uploader(T("File (PDF/immagine/qualsiasi)", "File (PDF/image/any)"),
                               key="lic_up")
+        # ── AI auto-extraction: read the uploaded licence and pre-fill the form ──
+        ex = st.session_state.get("lic_extract", {})
+        if up is not None:
+            if st.button(T("🔍 Leggi e compila automaticamente",
+                           "🔍 Read & auto-fill"), key="lic_extract_go",
+                         type="primary"):
+                if not api_key:
+                    st.error(T("Serve la API key (barra laterale) per leggere il documento.",
+                               "An API key (sidebar) is required to read the document."))
+                else:
+                    raw = up.getvalue()
+                    with st.spinner(T("Lettura documento…", "Reading document…")):
+                        got, err = extract_with_claude(raw, up.type or "application/pdf",
+                                                       "PERMIT", api_key)
+                    if err and not got:
+                        st.error(T(f"Estrazione non riuscita: {err}",
+                                   f"Extraction failed: {err}"))
+                    else:
+                        p = (got[0] if got else {}) or {}
+                        matricole = ", ".join(a.get("matricola", "")
+                                              for a in p.get("articoli", [])
+                                              if a.get("matricola"))
+                        st.session_state["lic_extract"] = {
+                            "doc_type": p.get("tipo") or "",
+                            "number": p.get("numero") or "",
+                            "country": p.get("paese_destinazione") or "",
+                            "counterparty": p.get("cliente") or "",
+                            "issue_date": p.get("data_emissione") or "",
+                            "expiry_date": p.get("data_scadenza") or "",
+                            "notes": (T("Matricole: ", "Serials: ") + matricole) if matricole else "",
+                        }
+                        st.rerun()
+            if ex:
+                st.success(T("Dati estratti dal documento — controlla e salva.",
+                             "Data extracted from the document — review and save."))
+        # ── form (pre-filled from AI extraction when available) ──
         c1, c2 = st.columns(2)
-        doc_type = c1.selectbox(T("Tipo documento", "Document type"), DOC_TYPES)
-        number = c2.text_input(T("Numero", "Number"))
+        _dt = ex.get("doc_type", "")
+        doc_type = c1.selectbox(T("Tipo documento", "Document type"), DOC_TYPES,
+                                index=DOC_TYPES.index(_dt) if _dt in DOC_TYPES else 0)
+        number = c2.text_input(T("Numero", "Number"), value=ex.get("number", ""))
         c3, c4 = st.columns(2)
-        country = c3.text_input(T("Paese", "Country"))
-        counterparty = c4.text_input(T("Controparte / Cliente", "Counterparty / Customer"))
+        country = c3.text_input(T("Paese", "Country"), value=ex.get("country", ""))
+        counterparty = c4.text_input(T("Controparte / Cliente", "Counterparty / Customer"),
+                                     value=ex.get("counterparty", ""))
         c5, c6 = st.columns(2)
-        issue = c5.text_input(T("Data emissione (GG/MM/AAAA)", "Issue date (DD/MM/YYYY)"))
-        expiry = c6.text_input(T("Data scadenza (GG/MM/AAAA)", "Expiry date (DD/MM/YYYY)"))
+        issue = c5.text_input(T("Data emissione (GG/MM/AAAA)", "Issue date (DD/MM/YYYY)"),
+                              value=ex.get("issue_date", ""))
+        expiry = c6.text_input(T("Data scadenza (GG/MM/AAAA)", "Expiry date (DD/MM/YYYY)"),
+                               value=ex.get("expiry_date", ""))
         c7, c8 = st.columns(2)
         n_op = c7.text_input(T("N. operazione collegata", "Linked operation no."))
         inv = c8.text_input(T("N. fattura collegata", "Linked invoice no."))
         tags = st.text_input(T("Tag (separati da virgola)", "Tags (comma-separated)"))
-        notes = st.text_area(T("Note", "Notes"))
-        if st.button(T("Salva in archivio", "Save to archive"), type="primary"):
+        notes = st.text_area(T("Note", "Notes"), value=ex.get("notes", ""))
+        if st.button(T("Salva in archivio", "Save to archive"), type="primary",
+                     key="lic_save"):
             if not up:
                 st.error(T("Seleziona un file.", "Select a file."))
             else:
-                arch.add(up.read(), up.name, {
+                arch.add(up.getvalue(), up.name, {
                     "doc_type": doc_type, "number": number, "country": country,
                     "counterparty": counterparty, "issue_date": issue, "expiry_date": expiry,
                     "n_operazione": n_op, "invoice_no": inv,
                     "tags": [t.strip() for t in tags.split(",") if t.strip()], "notes": notes})
+                st.session_state.pop("lic_extract", None)
                 st.success(T("Licenza archiviata.", "Licence archived."))
                 st.rerun()
     st.markdown(T("##### Archivio", "##### Archive"))
@@ -1490,7 +1534,7 @@ def main():
     with tabs[5]:
         section_registro()
     with tabs[6]:
-        section_licenses()
+        section_licenses(api_key)
     with tabs[7]:
         section_settings(backend)
 
