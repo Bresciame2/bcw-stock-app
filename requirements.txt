@@ -1,11 +1,8 @@
 streamlit>=1.35.0
 anthropic>=0.28.0
 openpyxl>=3.1.0
-pandas>=2.0.0
 pymupdf>=1.24.0
 pillow>=10.0.0
-reportlab>=4.0.0
-weasyprint>=61.0    # PDF rendering for proforma/packing/declarations (needs packages.txt libs)
-# shared-storage backend (chosen: Cloudflare R2 — S3-compatible):
-boto3>=1.34.0        # for BCW_STORAGE=s3 (AWS S3 / Backblaze B2 / Cloudflare R2 / MinIO)
-# dropbox>=11.36.0   # uncomment only if switching to BCW_STORAGE=dropbox
+qrcode>=7.4
+python-barcode>=0.15
+reportlab>=4.0
