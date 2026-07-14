@@ -74,9 +74,15 @@ def load_wb():
 
 
 def save_wb(wb):
-    backup = EXCEL_FILE.replace(".xlsx", "_backup.xlsx")
-    if os.path.exists(EXCEL_FILE):
-        shutil.copy2(EXCEL_FILE, backup)
+    # Best-effort backup. Tolerant of temp/storage paths that may not end in
+    # ".xlsx" (never raise SameFileError or block the save on a backup failure).
+    if os.path.exists(EXCEL_FILE) and EXCEL_FILE.lower().endswith(".xlsx"):
+        backup = EXCEL_FILE[:-5] + "_backup.xlsx"
+        if os.path.abspath(backup) != os.path.abspath(EXCEL_FILE):
+            try:
+                shutil.copy2(EXCEL_FILE, backup)
+            except Exception:
+                pass
     wb.save(EXCEL_FILE)
 
 

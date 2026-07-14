@@ -34,6 +34,15 @@ import bulk_io
 from license_archive import LicenseArchive, DOC_TYPES
 from doc_archive import DocArchive, DOC_TYPE_LABELS
 
+# Optional barcode support (QR + Code128 labels / scanning). If the libraries
+# are missing the app still runs — the Barcode UI just shows a notice.
+try:
+    import barcode_agent
+    _BARCODE_OK = True
+except Exception:
+    barcode_agent = None
+    _BARCODE_OK = False
+
 st.set_page_config(page_title="BCW Magazzino", page_icon="🔫", layout="wide")
 
 
@@ -633,8 +642,69 @@ def _extract_permit_block(api_key, invoice_no=""):
     return st.session_state.get("scarico_ata", "")
 
 
+def _scan_to_sell():
+    """Scanner-driven quick sale: scan a code, confirm the weapon, register."""
+    with st.expander(T("📷 Vendita rapida con scanner", "📷 Quick sale with scanner")):
+        st.caption(T("Scansiona il codice dell'arma, poi inserisci prezzo e "
+                     "cliente e registra la vendita.",
+                     "Scan the weapon's code, then enter price and customer and "
+                     "register the sale."))
+        code = st.text_input(T("Codice scansionato", "Scanned code"),
+                             key="sell_scan_code")
+        if st.button(T("🔍 Trova arma", "🔍 Find weapon"),
+                     key="sell_scan_find") and code.strip():
+            def _find(_p):
+                barcode_agent.EXCEL_FILE = _p
+                return barcode_agent.cmd_scan({"code": code.strip()})
+            try:
+                st.session_state["sell_scan_rec"] = with_workbook(_find, read_only=True)
+            except Exception as e:
+                st.session_state["sell_scan_rec"] = {"status": "error", "message": str(e)}
+        rec = st.session_state.get("sell_scan_rec")
+        if not rec:
+            return
+        if rec.get("status") != "found":
+            st.warning(rec.get("message", T("Non trovato.", "Not found.")))
+            return
+        if rec.get("venduto"):
+            st.warning(T(f"⚠️ Già venduto a {rec.get('CLIENTE')} — niente da fare.",
+                         f"⚠️ Already sold to {rec.get('CLIENTE')} — nothing to do."))
+            return
+        st.success(T(f"{rec.get('MARCA','')} {rec.get('MODELLO','')} · "
+                     f"SN {rec.get('MATR_ARMA','')} · riga {rec.get('row')}",
+                     f"{rec.get('MARCA','')} {rec.get('MODELLO','')} · "
+                     f"SN {rec.get('MATR_ARMA','')} · row {rec.get('row')}"))
+        with st.form("scan_sell_form"):
+            c1, c2 = st.columns(2)
+            price = c1.number_input(T("Prezzo €", "Price €"), min_value=0.0,
+                                    step=1.0, format="%.2f")
+            client = c2.text_input(T("Cliente", "Customer"))
+            c3, c4 = st.columns(2)
+            sdate = c3.text_input(T("Data vendita GG/MM/AAAA", "Sale date DD/MM/YYYY"))
+            invno = c4.text_input(T("N. fattura", "Invoice no."))
+            go = st.form_submit_button(T("✅ Registra vendita", "✅ Register sale"),
+                                       type="primary")
+        if go:
+            d = {"code": code.strip(), "prezzo_vendita": price, "cliente": client,
+                 "data_scarico": sdate, "data_fattura_vendita": sdate, "n_fattura": invno}
+            try:
+                res = with_workbook(lambda _p: stock_agent.add_scarico(d))
+            except Exception as e:
+                res = {"status": "error", "message": str(e)}
+            if res.get("status") == "success":
+                st.session_state.pop("sell_scan_rec", None)
+                st.session_state.pop("sell_scan_code", None)
+                flash(T(f"Vendita registrata (riga {res['row']}).",
+                        f"Sale registered (row {res['row']})."))
+                st.rerun()
+            else:
+                st.error(res.get("message"))
+
+
 def section_scarico(api_key):
     st.subheader(T("➖ Scarico (vendita)", "➖ Unload (sale)"))
+    if _BARCODE_OK:
+        _scan_to_sell()
     sbulk = _bulk_excel("scarico", key="scarico")
     if sbulk:
         st.session_state["items_SCARICO"] = sbulk
@@ -1484,6 +1554,138 @@ def section_documents():
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
+def section_barcode():
+    st.subheader(T("🏷️ Codici a barre / Etichette", "🏷️ Barcodes / Labels"))
+    if not _BARCODE_OK:
+        st.info(T("Librerie codici a barre non disponibili sul server "
+                  "(qrcode, python-barcode, reportlab).",
+                  "Barcode libraries are not available on the server "
+                  "(qrcode, python-barcode, reportlab)."))
+        return
+
+    # ── Generate labels ───────────────────────────────────────────────────────
+    st.markdown(T("#### Genera etichette (QR + Code128)",
+                  "#### Generate labels (QR + Code128)"))
+    all_mode = st.checkbox(
+        T("Tutte le armi in giacenza con matricola",
+          "All in-stock weapons with a serial"), key="bc_all")
+    if not all_mode:
+        g1, g2 = st.columns(2)
+        gen_matr = g1.text_input(T("Matricola arma", "Weapon serial"), key="bc_gen_matr")
+        gen_nop = g2.text_input(T("N. operazione", "Operation no."), key="bc_gen_nop")
+    else:
+        gen_matr = gen_nop = ""
+    if st.button(T("🏷️ Genera etichette", "🏷️ Generate labels"),
+                 type="primary", key="bc_gen_go"):
+        payload = {}
+        ok_to_go = True
+        if not all_mode:
+            if gen_matr.strip():
+                payload["matr_arma"] = gen_matr.strip()
+            elif gen_nop.strip():
+                payload["n_operazione"] = gen_nop.strip()
+            else:
+                st.warning(T("Inserisci una matricola o un n. operazione, "
+                             "oppure spunta «tutte».",
+                             "Enter a serial or operation no., or tick “all”."))
+                ok_to_go = False
+        if ok_to_go:
+            def _do(_p):
+                barcode_agent.EXCEL_FILE = _p
+                return barcode_agent.cmd_genera(payload)
+            try:
+                res = with_workbook(_do)
+            except Exception as e:
+                res = {"status": "error", "message": str(e)}
+            if res.get("status") == "success":
+                pdf_path = res.get("pdf")
+                data = None
+                if pdf_path and os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as fh:
+                        data = fh.read()
+                st.session_state["bc_pdf"] = (
+                    os.path.basename(pdf_path) if pdf_path else "labels.pdf", data)
+                flash(T(f"{res.get('labels', 0)} etichetta/e generate.",
+                        f"{res.get('labels', 0)} label(s) generated."))
+                st.rerun()
+            else:
+                st.warning(res.get("message", T("Errore.", "Error.")))
+    bc_pdf = st.session_state.get("bc_pdf")
+    if bc_pdf and bc_pdf[1]:
+        st.download_button(
+            T("⬇️ Scarica PDF etichette", "⬇️ Download label PDF"),
+            bc_pdf[1], file_name=bc_pdf[0], mime="application/pdf", key="bc_pdf_dl")
+
+    st.divider()
+
+    # ── Scan lookup ───────────────────────────────────────────────────────────
+    st.markdown(T("#### Scansiona un codice", "#### Scan a code"))
+    sc = st.text_input(T("Codice (scanner o manuale)", "Code (scanner or manual)"),
+                       key="bc_scan_code")
+    if st.button(T("🔍 Cerca codice", "🔍 Look up code"),
+                 key="bc_scan_go") and sc.strip():
+        def _scan(_p):
+            barcode_agent.EXCEL_FILE = _p
+            return barcode_agent.cmd_scan({"code": sc.strip()})
+        try:
+            rec = with_workbook(_scan, read_only=True)
+        except Exception as e:
+            rec = {"status": "error", "message": str(e)}
+        if rec.get("status") == "found":
+            st.success(T(f"Trovato alla riga {rec.get('row')} "
+                         f"(corrisp.: {rec.get('matched_by')}).",
+                         f"Found at row {rec.get('row')} "
+                         f"(matched by {rec.get('matched_by')})."))
+            if rec.get("venduto"):
+                st.warning(T(f"⚠️ Articolo già VENDUTO a {rec.get('CLIENTE')}.",
+                             f"⚠️ Item already SOLD to {rec.get('CLIENTE')}."))
+            st.json({k: v for k, v in rec.items()
+                     if k not in ("status", "matched_by", "venduto")})
+        else:
+            st.warning(rec.get("message", T("Non trovato.", "Not found.")))
+
+    st.divider()
+
+    # ── Link a maker's barcode to an existing item ────────────────────────────
+    with st.expander(T("🔗 Collega un codice fornitore a un articolo",
+                       "🔗 Link a maker's barcode to an item")):
+        st.caption(T("Per armi in entrata che hanno già un codice a barre del "
+                     "produttore: scansionalo qui per collegarlo alla riga, così "
+                     "le scansioni future risalgono all'articolo.",
+                     "For incoming weapons that already carry a maker's barcode: "
+                     "scan it here to attach it to the row, so future scans map "
+                     "back to the item."))
+        l1, l2 = st.columns(2)
+        link_matr = l1.text_input(T("Matricola arma", "Weapon serial"), key="bc_link_matr")
+        link_nop = l2.text_input(T("N. operazione", "Operation no."), key="bc_link_nop")
+        link_code = st.text_input(T("Codice fornitore scansionato",
+                                    "Scanned maker barcode"), key="bc_link_code")
+        if st.button(T("🔗 Collega", "🔗 Link"), key="bc_link_go"):
+            if not link_code.strip() or not (link_matr.strip() or link_nop.strip()):
+                st.warning(T("Servono il codice e (matricola o n. operazione).",
+                             "Need the code and (serial or operation no.)."))
+            else:
+                d = {"code": link_code.strip()}
+                if link_matr.strip():
+                    d["matr_arma"] = link_matr.strip()
+                if link_nop.strip():
+                    d["n_operazione"] = link_nop.strip()
+
+                def _link(_p):
+                    barcode_agent.EXCEL_FILE = _p
+                    return barcode_agent.cmd_link(d)
+                try:
+                    res = with_workbook(_link)
+                except Exception as e:
+                    res = {"status": "error", "message": str(e)}
+                if res.get("status") == "success":
+                    flash(T(f"Codice collegato alla riga {res['row']}.",
+                            f"Code linked to row {res['row']}."))
+                    st.rerun()
+                else:
+                    st.error(res.get("message"))
+
+
 def main():
     st.title(T("🔫 BCW – Gestione Magazzino & Registro",
                "🔫 BCW – Stock & Register Management"))
@@ -1512,7 +1714,8 @@ def main():
     tabs = st.tabs([T("📊 Dashboard", "📊 Dashboard"), T("➕ Carico", "➕ Load"),
                     T("➖ Scarico", "➖ Unload"), T("🔎 Cerca", "🔎 Search"),
                     T("📄 Documenti", "📄 Documents"), T("📑 Registro", "📑 Register"),
-                    T("📁 Licenze", "📁 Licences"), T("⚙️ Impostazioni", "⚙️ Settings")])
+                    T("📁 Licenze", "📁 Licences"), T("🏷️ Barcode", "🏷️ Barcode"),
+                    T("⚙️ Impostazioni", "⚙️ Settings")])
     with tabs[0]:
         section_dashboard()
     with tabs[1]:
@@ -1536,6 +1739,8 @@ def main():
     with tabs[6]:
         section_licenses(api_key)
     with tabs[7]:
+        section_barcode()
+    with tabs[8]:
         section_settings(backend)
 
 
