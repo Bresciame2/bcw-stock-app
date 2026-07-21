@@ -1190,6 +1190,69 @@ def section_settings(backend):
             res = with_workbook(lambda _p: stock_agent.validate_workbook(), read_only=True)
             st.json(res)
 
+        st.divider()
+        with st.expander(T("⚠️ Sostituisci il workbook (zona pericolosa)",
+                           "⚠️ Replace the workbook (danger zone)")):
+            st.caption(T("Carica un nuovo file MAGAZZINO per sostituire quello attuale nello "
+                         "storage condiviso. L'operazione SOVRASCRIVE il file live e non è "
+                         "reversibile — scarica prima un backup qui sotto.",
+                         "Upload a new STOCK file to replace the current one in shared storage. "
+                         "This OVERWRITES the live file and cannot be undone — download a "
+                         "backup first below."))
+            # 1) backup current live workbook
+            if st.button(T("⬇️ Prepara backup del workbook attuale",
+                           "⬇️ Prepare backup of current workbook"), key="repl_backup"):
+                try:
+                    cur = get_backend().read_bytes(storage.workbook_name())
+                except Exception as e:
+                    st.error(_storage_error_message(e))
+                else:
+                    st.download_button(
+                        T("⬇️ Scarica backup (.xlsx)", "⬇️ Download backup (.xlsx)"),
+                        cur,
+                        file_name=f"{os.path.splitext(storage.workbook_name())[0]} "
+                                  f"BACKUP {datetime.now():%Y-%m-%d %H%M}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument."
+                             "spreadsheetml.sheet",
+                        key="repl_backup_btn")
+            # 2) upload replacement — validated before it can go live
+            newwb = st.file_uploader(T("Carica il nuovo workbook (.xlsx)",
+                                       "Upload the new workbook (.xlsx)"),
+                                     type=["xlsx"], key="repl_upload")
+            if newwb is not None:
+                import tempfile
+                data = newwb.getvalue()
+                _prev = getattr(stock_agent, "EXCEL_FILE", None)
+                tmp = os.path.join(tempfile.gettempdir(), "_replace_check.xlsx")
+                try:
+                    with open(tmp, "wb") as fh:
+                        fh.write(data)
+                    stock_agent.EXCEL_FILE = tmp
+                    check = stock_agent.validate_workbook()
+                finally:
+                    stock_agent.EXCEL_FILE = _prev
+                ok = isinstance(check, dict) and check.get("status") == "ok"
+                if ok:
+                    st.success(T("✅ Struttura valida — pronto a sostituire.",
+                                 "✅ Structure valid — ready to replace."))
+                else:
+                    st.error(T("❌ Struttura non valida — sostituzione bloccata.",
+                               "❌ Invalid structure — replacement blocked."))
+                st.json(check)
+                confirm = st.checkbox(
+                    T("Ho capito: questo sovrascrive il file live nello storage.",
+                      "I understand: this overwrites the live file in storage."),
+                    key="repl_confirm")
+                if st.button(T("🔁 Sostituisci ora", "🔁 Replace now"), type="primary",
+                             disabled=not (ok and confirm), key="repl_go"):
+                    try:
+                        get_backend().write_bytes(storage.workbook_name(), data)
+                    except Exception as e:
+                        st.error(_storage_error_message(e))
+                    else:
+                        st.success(T("Workbook sostituito nello storage condiviso.",
+                                     "Workbook replaced in shared storage.")); st.rerun()
+
 
 # ── Documenti (proforma / packing / declarations) ─────────────────────────────
 def _bulk_excel(kind, company=None, key=None):
