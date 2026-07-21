@@ -163,6 +163,14 @@ tipologia,calibro,marca,modello,matr_arma,matr_canna,matr_agg,fornitore,costo,co
 - costo: prezzo unitario (numero)
 - date: formato DD/MM/YYYY
 - quantita: intero (default 1)
+- IMPORTANTE — UN PEZZO PER RIGA: se quantità > 1, genera UN oggetto per ogni
+  pezzo fisico (ripeti l'oggetto tante volte quanta è la quantità), ognuno con
+  quantita=1. Il numero totale di oggetti deve essere uguale alla somma delle
+  quantità di tutte le righe.
+- Matricole: se il documento indica un intervallo (es. "Mat: Da: 371123 A:
+  371129") assegna a ciascun pezzo la sua matricola consecutiva (371123, 371124,
+  … 371129). Se è indicata una sola matricola, usala per quel pezzo. Accessori
+  senza matricola: "N/D".
 Output: array JSON compatto, NESSUN testo fuori dal JSON. [{...},{...}]"""
     elif operation_type == "PERMIT":
         fields_prompt = """Documento: PERMESSO/AUTORIZZAZIONE DI ESPORTAZIONE armi
@@ -500,6 +508,58 @@ def _extract_block(op_key, api_key):
     return st.session_state.get(f"items_{op_key}")
 
 
+def _serial_range(raw, q):
+    """Return q consecutive serials parsed from a range string, else None.
+
+    Accepts forms like '371123-371129', 'Da 371123 A 371129', '371123 / 371129'.
+    Only returns serials when exactly two numbers are present AND they span
+    exactly q units — otherwise returns None so the caller falls back to N/D.
+    Preserves zero-padding width of the starting number.
+    """
+    import re
+    if not raw:
+        return None
+    nums = re.findall(r"\d+", str(raw))
+    if len(nums) != 2:
+        return None
+    start_s, end_s = nums
+    try:
+        start, end = int(start_s), int(end_s)
+    except ValueError:
+        return None
+    if end >= start and (end - start + 1) == q:
+        width = len(start_s)
+        return [str(n).zfill(width) for n in range(start, end + 1)]
+    return None
+
+
+def _expand_quantities(items):
+    """Split any line with quantità > 1 into one row per physical unit.
+
+    Firearms compliance needs one row per serial (each row carries its own
+    GIACENZA). If the serial is given as a range, assign consecutive serials;
+    otherwise emit N/D serials for the operator to fill in before saving.
+    Idempotent on already-split data (quantita<=1 passes through untouched).
+    """
+    out = []
+    for it in items or []:
+        it = dict(it)
+        try:
+            q = int(float(it.get("quantita") or 1))
+        except (ValueError, TypeError):
+            q = 1
+        it.pop("quantita", None)
+        if q <= 1:
+            out.append(it)
+            continue
+        serials = _serial_range(it.get("matr_arma"), q)
+        for k in range(q):
+            copy = dict(it)
+            copy["matr_arma"] = serials[k] if serials else "N/D"
+            out.append(copy)
+    return out
+
+
 def section_carico(api_key):
     st.subheader(T("➕ Carico (acquisto)", "➕ Load (purchase)"))
     cbulk = _bulk_excel("carico", key="carico")
@@ -508,7 +568,7 @@ def section_carico(api_key):
         st.success(T(f"{len(cbulk)} righe importate dall'Excel.",
                      f"{len(cbulk)} rows imported from Excel."))
         st.rerun()
-    items = _extract_block("CARICO", api_key) or [{}]
+    items = _expand_quantities(_extract_block("CARICO", api_key) or [{}])
     rows = []
     for it in items:
         rows.append({
