@@ -488,6 +488,13 @@ def _extract_block(op_key, api_key):
                             accept_multiple_files=True, key=f"docs_{op_key}")
     if docs and st.button(T("📄 Estrai dati con AI", "📄 Extract data with AI"),
                           key=f"ext_{op_key}", type="primary"):
+        if not api_key:
+            st.error(T("Nessuna API key configurata. Aggiungi ANTHROPIC_API_KEY nei "
+                       "secrets dell'app (o inseriscine una nella barra laterale) "
+                       "prima di estrarre i dati.",
+                       "No API key configured. Add ANTHROPIC_API_KEY to the app "
+                       "secrets (or enter one in the sidebar) before extracting data."))
+            return
         all_items, errors = [], []
         bar = st.progress(0.0, text=T("Elaborazione…", "Processing…"))
         for i, f in enumerate(docs):
@@ -603,6 +610,14 @@ def section_carico(api_key):
             ok, errs = [], []
             for _, r in edited.iterrows():
                 d = r.to_dict()
+                # data_editor returns NaN (float) for blank cells; turn those
+                # into None so downstream `x or ""` / .strip() guards work.
+                d = {k: (None if (isinstance(v, float) and pd.isna(v)) else v)
+                     for k, v in d.items()}
+                # skip fully-empty rows the user may have left in the editor
+                if not (str(d.get("tipologia") or "").strip()
+                        or str(d.get("matr_arma") or "").strip()):
+                    continue
                 try:
                     n = int(d.get("n_operazione") or 0)
                 except (ValueError, TypeError):
@@ -795,6 +810,10 @@ def section_scarico(api_key):
             ok, errs, fixes = [], [], []
             for _, r in edited.iterrows():
                 d = r.to_dict()
+                d = {k: (None if (isinstance(v, float) and pd.isna(v)) else v)
+                     for k, v in d.items()}
+                if not str(d.get("matr_arma") or "").strip():
+                    continue
                 res = stock_agent.add_scarico(d)
                 if res["status"] == "success":
                     ok.append(res)
